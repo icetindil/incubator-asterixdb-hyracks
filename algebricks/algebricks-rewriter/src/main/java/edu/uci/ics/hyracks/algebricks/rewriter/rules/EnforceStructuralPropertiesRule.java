@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -16,6 +16,7 @@ package edu.uci.ics.hyracks.algebricks.rewriter.rules;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +35,7 @@ import edu.uci.ics.hyracks.algebricks.core.algebra.base.IOptimizationContext;
 import edu.uci.ics.hyracks.algebricks.core.algebra.base.IPhysicalOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.base.LogicalOperatorTag;
 import edu.uci.ics.hyracks.algebricks.core.algebra.base.LogicalVariable;
+import edu.uci.ics.hyracks.algebricks.core.algebra.base.OperatorAnnotations;
 import edu.uci.ics.hyracks.algebricks.core.algebra.base.PhysicalOperatorTag;
 import edu.uci.ics.hyracks.algebricks.core.algebra.expressions.VariableReferenceExpression;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
@@ -54,6 +56,8 @@ import edu.uci.ics.hyracks.algebricks.core.algebra.operators.physical.InMemorySt
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.physical.PreSortedDistinctByPOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.physical.PreclusteredGroupByPOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.physical.RandomMergeExchangePOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.physical.RandomPartitionPOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.physical.RangePartitionMergePOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.physical.RangePartitionPOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.physical.SortMergeExchangePOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.physical.StableSortPOperator;
@@ -82,6 +86,7 @@ import edu.uci.ics.hyracks.algebricks.core.config.AlgebricksConfig;
 import edu.uci.ics.hyracks.algebricks.core.rewriter.base.IAlgebraicRewriteRule;
 import edu.uci.ics.hyracks.algebricks.core.rewriter.base.PhysicalOptimizationConfig;
 import edu.uci.ics.hyracks.algebricks.rewriter.util.PhysicalOptimizationsUtil;
+import edu.uci.ics.hyracks.dataflow.common.data.partition.range.IRangeMap;
 
 public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
 
@@ -259,7 +264,7 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
             if (AlgebricksConfig.DEBUG) {
                 AlgebricksConfig.ALGEBRICKS_LOGGER.fine(">>>> Removing redundant SORT operator "
                         + op.getPhysicalOperator() + "\n");
-                printOp((AbstractLogicalOperator) op);
+                printOp(op);
             }
             changed = true;
             AbstractLogicalOperator nextOp = (AbstractLogicalOperator) op.getInputs().get(0).getValue();
@@ -270,7 +275,7 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
             // Now, transfer annotations from the original sort op. to this one.
             AbstractLogicalOperator transferTo = nextOp;
             if (transferTo.getOperatorTag() == LogicalOperatorTag.EXCHANGE) {
-                // 
+                //
                 // remove duplicate exchange operator
                 transferTo = (AbstractLogicalOperator) transferTo.getInputs().get(0).getValue();
             }
@@ -338,20 +343,24 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
         }
 
         int prefix = dlvdCols.size() - 1;
-        for (; prefix >= 0;)
-            if (!rqdCols.contains(dlvdCols.get(prefix)))
+        for (; prefix >= 0;) {
+            if (!rqdCols.contains(dlvdCols.get(prefix))) {
                 prefix--;
-            else
+            } else {
                 break;
+            }
+        }
+
+        LocalOrderProperty orderProp = (LocalOrderProperty) dlvd.get(0);
+        List<OrderColumn> orderColumns = orderProp.getOrderColumns();
         for (int j = 0; j <= prefix; j++) {
-            LocalOrderProperty orderProp = (LocalOrderProperty) dlvd.get(j);
-            returnedProperties.add(new OrderColumn(orderProp.getColumn(), orderProp.getOrder()));
+            returnedProperties.add(new OrderColumn(orderColumns.get(j).getColumn(), orderColumns.get(j).getOrder()));
         }
         // maintain other order columns after the required order columns
-        if(returnedProperties.size() != 0){
-            for(int j = prefix + 1; j < dlvdCols.size(); j++){
-                LocalOrderProperty orderProp = (LocalOrderProperty) dlvd.get(j);
-                returnedProperties.add(new OrderColumn(orderProp.getColumn(), orderProp.getOrder()));
+        if (returnedProperties.size() != 0) {
+            for (int j = prefix + 1; j < dlvdCols.size(); j++) {
+                OrderColumn oc = orderColumns.get(j);
+                returnedProperties.add(new OrderColumn(oc.getColumn(), oc.getOrder()));
             }
         }
         return returnedProperties;
@@ -371,9 +380,9 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
         }
         AbstractStableSortPOperator sortOp = (AbstractStableSortPOperator) op.getPhysicalOperator();
         sortOp.computeLocalProperties(op);
-        List<ILocalStructuralProperty> orderProps = sortOp.getOrderProperties();
-        return PropertiesUtil.matchLocalProperties(orderProps, delivered.getLocalProperties(),
-                context.getEquivalenceClassMap(op), context.getFDList(op));
+        ILocalStructuralProperty orderProp = sortOp.getOrderProperty();
+        return PropertiesUtil.matchLocalProperties(Collections.singletonList(orderProp),
+                delivered.getLocalProperties(), context.getEquivalenceClassMap(op), context.getFDList(op));
     }
 
     private void addEnforcers(AbstractLogicalOperator op, int childIndex,
@@ -423,11 +432,13 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
                     LocalGroupingProperty g = (LocalGroupingProperty) prop;
                     Collection<LogicalVariable> vars = (g.getPreferredOrderEnforcer() != null) ? g
                             .getPreferredOrderEnforcer() : g.getColumnSet();
+                    List<OrderColumn> orderColumns = new ArrayList<OrderColumn>();
                     for (LogicalVariable v : vars) {
                         OrderColumn oc = new OrderColumn(v, OrderKind.ASC);
-                        LocalOrderProperty lop = new LocalOrderProperty(oc);
-                        oList.add(lop);
+                        orderColumns.add(oc);
                     }
+                    LocalOrderProperty lop = new LocalOrderProperty(orderColumns);
+                    oList.add(lop);
                     break;
                 }
                 default: {
@@ -448,11 +459,13 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
             Mutable<ILogicalOperator> topOp, boolean isMicroOp, IOptimizationContext context)
             throws AlgebricksException {
         List<Pair<IOrder, Mutable<ILogicalExpression>>> oe = new LinkedList<Pair<IOrder, Mutable<ILogicalExpression>>>();
-        for (LocalOrderProperty o : oList) {
-            IOrder ordType = (o.getOrder() == OrderKind.ASC) ? OrderOperator.ASC_ORDER : OrderOperator.DESC_ORDER;
-            Pair<IOrder, Mutable<ILogicalExpression>> pair = new Pair<IOrder, Mutable<ILogicalExpression>>(ordType,
-                    new MutableObject<ILogicalExpression>(new VariableReferenceExpression(o.getColumn())));
-            oe.add(pair);
+        for (LocalOrderProperty orderProperty : oList) {
+            for (OrderColumn oc : orderProperty.getOrderColumns()) {
+                IOrder ordType = (oc.getOrder() == OrderKind.ASC) ? OrderOperator.ASC_ORDER : OrderOperator.DESC_ORDER;
+                Pair<IOrder, Mutable<ILogicalExpression>> pair = new Pair<IOrder, Mutable<ILogicalExpression>>(ordType,
+                        new MutableObject<ILogicalExpression>(new VariableReferenceExpression(oc.getColumn())));
+                oe.add(pair);
+            }
         }
         OrderOperator oo = new OrderOperator(oe);
         oo.setExecutionMode(AbstractLogicalOperator.ExecutionMode.LOCAL);
@@ -480,9 +493,15 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
                     if (ordCols == null || ordCols.size() == 0) {
                         pop = new RandomMergeExchangePOperator();
                     } else {
-                        OrderColumn[] sortColumns = new OrderColumn[ordCols.size()];
-                        sortColumns = ordCols.toArray(sortColumns);
-                        pop = new SortMergeExchangePOperator(sortColumns);
+                        if (op.getAnnotations().containsKey(OperatorAnnotations.USE_RANGE_CONNECTOR)) {
+                            IRangeMap rangeMap = (IRangeMap) op.getAnnotations().get(
+                                    OperatorAnnotations.USE_RANGE_CONNECTOR);
+                            pop = new RangePartitionMergePOperator(ordCols, domain, rangeMap);
+                        } else {
+                            OrderColumn[] sortColumns = new OrderColumn[ordCols.size()];
+                            sortColumns = ordCols.toArray(sortColumns);
+                            pop = new SortMergeExchangePOperator(sortColumns);
+                        }
                     }
                     break;
                 }
@@ -510,7 +529,7 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
                     break;
                 }
                 case ORDERED_PARTITIONED: {
-                    pop = new RangePartitionPOperator(((OrderedPartitionedProperty) pp).getOrderColumns(), domain);
+                    pop = new RangePartitionPOperator(((OrderedPartitionedProperty) pp).getOrderColumns(), domain, null);
                     break;
                 }
                 case BROADCAST: {
@@ -520,18 +539,7 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
                 case RANDOM: {
                     RandomPartitioningProperty rpp = (RandomPartitioningProperty) pp;
                     INodeDomain nd = rpp.getNodeDomain();
-                    if (nd == null) {
-                        throw new AlgebricksException("Unknown node domain for " + rpp);
-                    }
-                    if (nd.cardinality() == null) {
-                        throw new AlgebricksException("Unknown cardinality for node domain " + nd);
-                    }
-                    if (nd.cardinality() != 1) {
-                        throw new NotImplementedException(
-                                "Random repartitioning is only implemented for target domains of"
-                                        + "cardinality equal to 1.");
-                    }
-                    pop = new BroadcastPOperator(nd);
+                    pop = new RandomPartitionPOperator(nd);
                     break;
                 }
                 default: {
@@ -579,7 +587,7 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
             for (ILocalStructuralProperty p : localProps) {
                 if (p.getPropertyType() == PropertyType.LOCAL_ORDER_PROPERTY) {
                     LocalOrderProperty lop = (LocalOrderProperty) p;
-                    ordCols.add(lop.getOrderColumn());
+                    ordCols.addAll(lop.getOrderColumns());
                 } else {
                     return null;
                 }

@@ -72,6 +72,9 @@ public class InsertPipelineExample {
 
         @Option(name = "-secondary-btreename", usage = "B-Tree file name of secondary index", required = true)
         public String secondaryBTreeName;
+
+        @Option(name = "-frame-size", usage = "Hyracks frame size (default: 32768)", required = false)
+        public int frameSize = 32768;
     }
 
     public static void main(String[] args) throws Exception {
@@ -92,7 +95,7 @@ public class InsertPipelineExample {
 
     private static JobSpecification createJob(Options options) {
 
-        JobSpecification spec = new JobSpecification();
+        JobSpecification spec = new JobSpecification(options.frameSize);
 
         String[] splitNCs = options.ncs.split(",");
 
@@ -143,7 +146,7 @@ public class InsertPipelineExample {
                                                         // B-Tree tuple, etc.        
         IFileSplitProvider primarySplitProvider = JobHelper.createFileSplitProvider(splitNCs, options.primaryBTreeName);
 
-        IIndexDataflowHelperFactory dataflowHelperFactory = new BTreeDataflowHelperFactory();
+        IIndexDataflowHelperFactory dataflowHelperFactory = new BTreeDataflowHelperFactory(true);
 
         // create operator descriptor
         TreeIndexInsertUpdateDeleteOperatorDescriptor primaryInsert = new TreeIndexInsertUpdateDeleteOperatorDescriptor(

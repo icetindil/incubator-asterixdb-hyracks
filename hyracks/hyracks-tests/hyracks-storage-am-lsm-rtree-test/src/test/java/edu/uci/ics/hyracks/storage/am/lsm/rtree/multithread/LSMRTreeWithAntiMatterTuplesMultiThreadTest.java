@@ -30,17 +30,18 @@ import edu.uci.ics.hyracks.storage.am.common.api.TreeIndexException;
 import edu.uci.ics.hyracks.storage.am.common.datagen.ProbabilityHelper;
 import edu.uci.ics.hyracks.storage.am.lsm.rtree.util.LSMRTreeTestHarness;
 import edu.uci.ics.hyracks.storage.am.lsm.rtree.utils.LSMRTreeUtils;
+import edu.uci.ics.hyracks.storage.am.rtree.AbstractRTreeExamplesTest.RTreeType;
 import edu.uci.ics.hyracks.storage.am.rtree.AbstractRTreeMultiThreadTest;
 import edu.uci.ics.hyracks.storage.am.rtree.frames.RTreePolicyType;
 
 public class LSMRTreeWithAntiMatterTuplesMultiThreadTest extends AbstractRTreeMultiThreadTest {
 
-    private LSMRTreeTestHarness harness = new LSMRTreeTestHarness();
+    private final LSMRTreeTestHarness harness = new LSMRTreeTestHarness();
 
-    private LSMRTreeWithAntiMatterTuplesTestWorkerFactory workerFactory = new LSMRTreeWithAntiMatterTuplesTestWorkerFactory();
+    private final LSMRTreeWithAntiMatterTuplesTestWorkerFactory workerFactory = new LSMRTreeWithAntiMatterTuplesTestWorkerFactory();
 
     public LSMRTreeWithAntiMatterTuplesMultiThreadTest() {
-        super(false);
+        super(false, RTreeType.LSMRTREE_WITH_ANTIMATTER);
     }
 
     @Override
@@ -56,13 +57,14 @@ public class LSMRTreeWithAntiMatterTuplesMultiThreadTest extends AbstractRTreeMu
     @Override
     protected ITreeIndex createTreeIndex(ITypeTraits[] typeTraits, IBinaryComparatorFactory[] rtreeCmpFactories,
             IBinaryComparatorFactory[] btreeCmpFactories, IPrimitiveValueProviderFactory[] valueProviderFactories,
-            RTreePolicyType rtreePolicyType) throws TreeIndexException {
-        return LSMRTreeUtils.createLSMTreeWithAntiMatterTuples(harness.getVirtualBufferCaches(),
-                harness.getFileReference(), harness.getDiskBufferCache(), harness.getDiskFileMapProvider(), typeTraits,
-                rtreeCmpFactories, btreeCmpFactories, valueProviderFactories, rtreePolicyType,
-                harness.getMergePolicy(), harness.getOperationTracker(), harness.getIOScheduler(),
-                harness.getIOOperationCallback(),
-                LSMRTreeUtils.proposeBestLinearizer(typeTraits, rtreeCmpFactories.length));
+            RTreePolicyType rtreePolicyType, int[] btreeFields) throws TreeIndexException {
+        return LSMRTreeUtils
+                .createLSMTreeWithAntiMatterTuples(harness.getVirtualBufferCaches(), harness.getFileReference(),
+                        harness.getDiskBufferCache(), harness.getDiskFileMapProvider(), typeTraits, rtreeCmpFactories,
+                        btreeCmpFactories, valueProviderFactories, rtreePolicyType, harness.getMergePolicy(),
+                        harness.getOperationTracker(), harness.getIOScheduler(), harness.getIOOperationCallback(),
+                        LSMRTreeUtils.proposeBestLinearizer(typeTraits, rtreeCmpFactories.length), null, null, null,
+                        null, true);
 
     }
 

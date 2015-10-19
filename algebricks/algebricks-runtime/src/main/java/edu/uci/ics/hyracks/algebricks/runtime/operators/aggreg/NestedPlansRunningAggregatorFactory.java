@@ -23,6 +23,7 @@ import edu.uci.ics.hyracks.algebricks.runtime.base.IPushRuntimeFactory;
 import edu.uci.ics.hyracks.algebricks.runtime.operators.std.NestedTupleSourceRuntimeFactory.NestedTupleSourceRuntime;
 import edu.uci.ics.hyracks.api.comm.IFrameTupleAccessor;
 import edu.uci.ics.hyracks.api.comm.IFrameWriter;
+import edu.uci.ics.hyracks.api.comm.VSizeFrame;
 import edu.uci.ics.hyracks.api.context.IHyracksTaskContext;
 import edu.uci.ics.hyracks.api.dataflow.value.RecordDescriptor;
 import edu.uci.ics.hyracks.api.exceptions.HyracksDataException;
@@ -37,9 +38,9 @@ import edu.uci.ics.hyracks.dataflow.std.group.IAggregatorDescriptorFactory;
 public class NestedPlansRunningAggregatorFactory implements IAggregatorDescriptorFactory {
 
     private static final long serialVersionUID = 1L;
-    private AlgebricksPipeline[] subplans;
-    private int[] keyFieldIdx;
-    private int[] decorFieldIdx;
+    private final AlgebricksPipeline[] subplans;
+    private final int[] keyFieldIdx;
+    private final int[] decorFieldIdx;
 
     public NestedPlansRunningAggregatorFactory(AlgebricksPipeline[] subplans, int[] keyFieldIdx, int[] decorFieldIdx) {
         this.subplans = subplans;
@@ -67,10 +68,6 @@ public class NestedPlansRunningAggregatorFactory implements IAggregatorDescripto
 
         final ArrayTupleBuilder gbyTb = outputWriter.getGroupByTupleBuilder();
 
-        final ByteBuffer outputFrame = ctx.allocateFrame();
-        final FrameTupleAppender outputAppender = new FrameTupleAppender(ctx.getFrameSize());
-        outputAppender.reset(outputFrame, true);
-
         return new IAggregatorDescriptor() {
 
             @Override
@@ -93,7 +90,6 @@ public class NestedPlansRunningAggregatorFactory implements IAggregatorDescripto
                 for (int i = 0; i < pipelines.length; i++) {
                     outputWriter.setInputIdx(i);
                     pipelines[i].writeTuple(accessor.getBuffer(), tIndex);
-                    pipelines[i].forceFlush();
                 }
             }
 
@@ -103,13 +99,16 @@ public class NestedPlansRunningAggregatorFactory implements IAggregatorDescripto
                 for (int i = 0; i < pipelines.length; i++) {
                     outputWriter.setInputIdx(i);
                     pipelines[i].writeTuple(accessor.getBuffer(), tIndex);
-                    pipelines[i].forceFlush();
                 }
             }
 
             @Override
             public boolean outputFinalResult(ArrayTupleBuilder tupleBuilder, IFrameTupleAccessor accessor, int tIndex,
                     AggregateState state) throws HyracksDataException {
+                for (int i = 0; i < pipelines.length; ++i) {
+                    outputWriter.setInputIdx(i);
+                    pipelines[i].close();
+                }
                 return false;
             }
 
@@ -131,14 +130,7 @@ public class NestedPlansRunningAggregatorFactory implements IAggregatorDescripto
 
             @Override
             public void close() {
-                for (int i = 0; i < pipelines.length; ++i) {
-                    try {
-                        outputWriter.setInputIdx(i);
-                        pipelines[i].close();
-                    } catch (HyracksDataException e) {
-                        throw new IllegalStateException(e);
-                    }
-                }
+
             }
         };
     }
@@ -165,15 +157,14 @@ public class NestedPlansRunningAggregatorFactory implements IAggregatorDescripto
 
     private static class RunningAggregatorOutput implements IFrameWriter {
 
-        private FrameTupleAccessor[] tAccess;
-        private RecordDescriptor[] inputRecDesc;
+        private final FrameTupleAccessor[] tAccess;
+        private final RecordDescriptor[] inputRecDesc;
         private int inputIdx;
-        private ArrayTupleBuilder tb;
-        private ArrayTupleBuilder gbyTb;
-        private AlgebricksPipeline[] subplans;
-        private IFrameWriter outputWriter;
-        private ByteBuffer outputFrame;
-        private FrameTupleAppender outputAppender;
+        private final ArrayTupleBuilder tb;
+        private final ArrayTupleBuilder gbyTb;
+        private final AlgebricksPipeline[] subplans;
+        private final IFrameWriter outputWriter;
+        private final FrameTupleAppender outputAppender;
 
         public RunningAggregatorOutput(IHyracksTaskContext ctx, AlgebricksPipeline[] subplans, int numKeys,
                 int numDecors, IFrameWriter outputWriter) throws HyracksDataException {
@@ -193,12 +184,10 @@ public class NestedPlansRunningAggregatorFactory implements IAggregatorDescripto
 
             this.tAccess = new FrameTupleAccessor[inputRecDesc.length];
             for (int i = 0; i < inputRecDesc.length; i++) {
-                tAccess[i] = new FrameTupleAccessor(ctx.getFrameSize(), inputRecDesc[i]);
+                tAccess[i] = new FrameTupleAccessor(inputRecDesc[i]);
             }
 
-            this.outputFrame = ctx.allocateFrame();
-            this.outputAppender = new FrameTupleAppender(ctx.getFrameSize());
-            this.outputAppender.reset(outputFrame, true);
+            this.outputAppender = new FrameTupleAppender(new VSizeFrame(ctx));
         }
 
         @Override
@@ -226,23 +215,14 @@ public class NestedPlansRunningAggregatorFactory implements IAggregatorDescripto
                 for (int f = 0; f < w; f++) {
                     tb.addField(accessor, tIndex, f);
                 }
-                if (!outputAppender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
-                    FrameUtils.flushFrame(outputFrame, outputWriter);
-                    outputAppender.reset(outputFrame, true);
-                    if (!outputAppender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
-                        throw new HyracksDataException(
-                                "Failed to write a running aggregation result into an empty frame: possibly the size of the result is too large.");
-                    }
-                }
+                FrameUtils.appendToWriter(outputWriter, outputAppender, tb.getFieldEndOffsets(),
+                        tb.getByteArray(), 0, tb.getSize());
             }
         }
 
         @Override
         public void close() throws HyracksDataException {
-            if (outputAppender.getTupleCount() > 0) {
-                FrameUtils.flushFrame(outputFrame, outputWriter);
-                outputAppender.reset(outputFrame, true);
-            }
+            outputAppender.flush(outputWriter, true);
         }
 
         public void setInputIdx(int inputIdx) {

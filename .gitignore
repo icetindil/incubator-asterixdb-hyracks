@@ -1,3 +1,5 @@
+invIndex*
+primaryBTree*
 bin
 target
 .classpath
@@ -22,3 +24,5 @@ teststore
 output
 tmp
 dist
+*.iml
+.idea/

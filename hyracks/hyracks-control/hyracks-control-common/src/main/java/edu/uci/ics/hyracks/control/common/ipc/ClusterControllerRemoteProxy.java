@@ -112,10 +112,10 @@ public class ClusterControllerRemoteProxy implements IClusterController {
         ipcHandle.send(-1, fn, null);
     }
 
-    public void registerResultPartitionLocation(JobId jobId, ResultSetId rsId, boolean orderedResult, int partition,
+    public void registerResultPartitionLocation(JobId jobId, ResultSetId rsId, boolean orderedResult, boolean emptyResult, int partition,
             int nPartitions, NetworkAddress networkAddress) throws Exception {
         CCNCFunctions.RegisterResultPartitionLocationFunction fn = new CCNCFunctions.RegisterResultPartitionLocationFunction(
-                jobId, rsId, orderedResult, partition, nPartitions, networkAddress);
+                jobId, rsId, orderedResult, emptyResult, partition, nPartitions, networkAddress);
         ipcHandle.send(-1, fn, null);
     }
 
@@ -143,6 +143,11 @@ public class ClusterControllerRemoteProxy implements IClusterController {
         CCNCFunctions.StateDumpResponseFunction fn = new CCNCFunctions.StateDumpResponseFunction(nodeId, stateDumpId,
                 state);
         ipcHandle.send(-1, fn, null);
+    }
+    @Override
+    public void notifyShutdown(String nodeId) throws Exception{
+        CCNCFunctions.ShutdownResponseFunction sdrf = new CCNCFunctions.ShutdownResponseFunction(nodeId);
+        ipcHandle.send(-1,sdrf,null);
     }
 
 }

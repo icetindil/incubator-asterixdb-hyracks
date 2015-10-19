@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -19,10 +19,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
-import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 import edu.uci.ics.hyracks.api.comm.IFrameWriter;
+import edu.uci.ics.hyracks.api.comm.VSizeFrame;
 import edu.uci.ics.hyracks.api.context.IHyracksTaskContext;
 import edu.uci.ics.hyracks.api.exceptions.HyracksDataException;
 import edu.uci.ics.hyracks.dataflow.common.comm.io.ArrayTupleBuilder;
@@ -42,9 +42,7 @@ public class WordTupleParserFactory implements ITupleParserFactory {
             @Override
             public void parse(InputStream in, IFrameWriter writer) throws HyracksDataException {
                 try {
-                    ByteBuffer frame = ctx.allocateFrame();
-                    FrameTupleAppender appender = new FrameTupleAppender(ctx.getFrameSize());
-                    appender.reset(frame, true);
+                    FrameTupleAppender appender = new FrameTupleAppender(new VSizeFrame(ctx));
                     ArrayTupleBuilder tb = new ArrayTupleBuilder(1);
                     DataOutput dos = tb.getDataOutput();
 
@@ -54,17 +52,10 @@ public class WordTupleParserFactory implements ITupleParserFactory {
                         tb.reset();
                         utf8StringParser.parse(cursor.buffer, cursor.fStart, cursor.fEnd - cursor.fStart, dos);
                         tb.addFieldEndOffset();
-                        if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
-                            FrameUtils.flushFrame(frame, writer);
-                            appender.reset(frame, true);
-                            if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
-                                throw new HyracksDataException("Record size (" + tb.getSize() + ") larger than frame size (" + appender.getBuffer().capacity() + ")");
-                            }
-                        }
+                        FrameUtils.appendToWriter(writer, appender, tb.getFieldEndOffsets(), tb.getByteArray(), 0,
+                                tb.getSize());
                     }
-                    if (appender.getTupleCount() > 0) {
-                        FrameUtils.flushFrame(frame, writer);
-                    }
+                    appender.flush(writer, true);
                 } catch (IOException e) {
                     throw new HyracksDataException(e);
                 }

@@ -22,12 +22,14 @@ import edu.uci.ics.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import edu.uci.ics.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
 import edu.uci.ics.hyracks.algebricks.runtime.base.IUnnestingEvaluator;
 import edu.uci.ics.hyracks.algebricks.runtime.base.IUnnestingEvaluatorFactory;
+import edu.uci.ics.hyracks.algebricks.runtime.base.IUnnestingPositionWriter;
 import edu.uci.ics.hyracks.algebricks.runtime.evaluators.ConstantEvaluatorFactory;
 import edu.uci.ics.hyracks.algebricks.runtime.operators.base.AbstractOneInputOneOutputOneFramePushRuntime;
 import edu.uci.ics.hyracks.algebricks.runtime.operators.base.AbstractOneInputOneOutputRuntimeFactory;
 import edu.uci.ics.hyracks.api.context.IHyracksTaskContext;
 import edu.uci.ics.hyracks.api.exceptions.HyracksDataException;
 import edu.uci.ics.hyracks.data.std.api.IPointable;
+import edu.uci.ics.hyracks.data.std.primitive.IntegerPointable;
 import edu.uci.ics.hyracks.data.std.primitive.VoidPointable;
 import edu.uci.ics.hyracks.dataflow.common.comm.io.ArrayTupleBuilder;
 import edu.uci.ics.hyracks.dataflow.common.data.marshalling.IntegerSerializerDeserializer;
@@ -41,7 +43,7 @@ public class UnnestRuntimeFactory extends AbstractOneInputOneOutputRuntimeFactor
     private int outColPos;
     private final boolean outColIsProjected;
 
-    private final boolean hasPositionalVariable;
+    private final IUnnestingPositionWriter positionWriter;
     private IScalarEvaluatorFactory posOffsetEvalFactory;
 
     // Each time step() is called on the aggregate, a new value is written in
@@ -50,11 +52,11 @@ public class UnnestRuntimeFactory extends AbstractOneInputOneOutputRuntimeFactor
     // produced the last value.
 
     public UnnestRuntimeFactory(int outCol, IUnnestingEvaluatorFactory unnestingFactory, int[] projectionList) {
-        this(outCol, unnestingFactory, projectionList, false, null);
+        this(outCol, unnestingFactory, projectionList, null, null);
     }
 
     public UnnestRuntimeFactory(int outCol, IUnnestingEvaluatorFactory unnestingFactory, int[] projectionList,
-            boolean hashPositionalVariable, IScalarEvaluatorFactory posOffsetEvalFactory) {
+            IUnnestingPositionWriter positionWriter, IScalarEvaluatorFactory posOffsetEvalFactory) {
         super(projectionList);
         this.outCol = outCol;
         this.unnestingFactory = unnestingFactory;
@@ -65,7 +67,7 @@ public class UnnestRuntimeFactory extends AbstractOneInputOneOutputRuntimeFactor
             }
         }
         outColIsProjected = outColPos >= 0;
-        this.hasPositionalVariable = hashPositionalVariable;
+        this.positionWriter = positionWriter;
         this.posOffsetEvalFactory = posOffsetEvalFactory;
         if (this.posOffsetEvalFactory == null) {
             this.posOffsetEvalFactory = new ConstantEvaluatorFactory(new byte[5]);
@@ -114,7 +116,7 @@ public class UnnestRuntimeFactory extends AbstractOneInputOneOutputRuntimeFactor
                     }
 
                     @SuppressWarnings("static-access")
-                    int offset = IntegerSerializerDeserializer.INSTANCE.getInt(p.getByteArray(), p.getStartOffset());
+                    int offset = IntegerPointable.getInteger(p.getByteArray(), p.getStartOffset());
 
                     try {
                         agg.init(tRef);
@@ -129,7 +131,7 @@ public class UnnestRuntimeFactory extends AbstractOneInputOneOutputRuntimeFactor
                                 goon = false;
                             } else {
 
-                                if (!outColIsProjected && !hasPositionalVariable) {
+                                if (!outColIsProjected && positionWriter == null) {
                                     appendProjectionToFrame(t, projectionList);
                                 } else {
                                     for (int f = 0; f < outColPos; f++) {
@@ -140,15 +142,14 @@ public class UnnestRuntimeFactory extends AbstractOneInputOneOutputRuntimeFactor
                                     } else {
                                         tupleBuilder.addField(tAccess, t, outColPos);
                                     }
-                                    for (int f = outColPos + 1; f < (hasPositionalVariable ? projectionList.length - 1
+                                    for (int f = outColPos + 1; f < (positionWriter != null ? projectionList.length - 1
                                             : projectionList.length); f++) {
                                         tupleBuilder.addField(tAccess, t, f);
                                     }
                                 }
-                                if (hasPositionalVariable) {
-                                    // Write the positional variable as an INT32
-                                    tupleBuilder.getDataOutput().writeByte(3);
-                                    tupleBuilder.getDataOutput().writeInt(offset + positionIndex++);
+                                if (positionWriter != null) {
+                                    // Write the positional variable
+                                    positionWriter.write(tupleBuilder.getDataOutput(), offset + positionIndex++);
                                     tupleBuilder.addFieldEndOffset();
                                 }
                                 appendToFrameFromTupleBuilder(tupleBuilder);

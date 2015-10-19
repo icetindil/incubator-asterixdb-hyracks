@@ -20,8 +20,18 @@
   <parent>
     <groupId>edu.uci.ics.hyracks</groupId>
     <artifactId>hyracks</artifactId>
-    <version>0.2.11-SNAPSHOT</version>
+    <version>0.2.16-SNAPSHOT</version>
   </parent>
+
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+      <comments>A business-friendly OSS license</comments>
+    </license>
+  </licenses>
+
 
   <build>
     <plugins>
@@ -41,28 +51,26 @@
   	<dependency>
   		<groupId>edu.uci.ics.hyracks</groupId>
   		<artifactId>hyracks-api</artifactId>
-  		<version>0.2.11-SNAPSHOT</version>
+  		<version>0.2.16-SNAPSHOT</version>
   		<type>jar</type>
   		<scope>compile</scope>
   	</dependency>
   	<dependency>
   		<groupId>edu.uci.ics.hyracks</groupId>
   		<artifactId>hyracks-dataflow-common</artifactId>
-  		<version>0.2.11-SNAPSHOT</version>
+  		<version>0.2.16-SNAPSHOT</version>
   		<type>jar</type>
   		<scope>compile</scope>
   	</dependency>
   	<dependency>
-  		<groupId>junit</groupId>
-  		<artifactId>junit</artifactId>
-  		<version>4.8.2</version>
-  		<type>jar</type>
-  		<scope>test</scope>
-  	</dependency>
-  	<dependency>
   		<groupId>commons-io</groupId>
   		<artifactId>commons-io</artifactId>
-  		<version>2.4</version>
   	</dependency>
+      <dependency>
+          <groupId>edu.uci.ics.hyracks</groupId>
+          <artifactId>hyracks-control-nc</artifactId>
+          <version>0.2.16-SNAPSHOT</version>
+          <scope>test</scope>
+      </dependency>
   </dependencies>
 </project>

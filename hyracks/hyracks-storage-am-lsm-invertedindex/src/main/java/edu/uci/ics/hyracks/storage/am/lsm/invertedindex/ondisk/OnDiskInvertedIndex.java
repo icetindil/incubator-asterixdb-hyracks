@@ -273,14 +273,10 @@ public class OnDiskInvertedIndex implements IInvertedIndex {
     }
 
     public void resetInvertedListCursor(ITupleReference btreeTuple, IInvertedListCursor listCursor) {
-        int startPageId = IntegerSerializerDeserializer.getInt(btreeTuple.getFieldData(invListStartPageIdField),
-                btreeTuple.getFieldStart(invListStartPageIdField));
-        int endPageId = IntegerSerializerDeserializer.getInt(btreeTuple.getFieldData(invListEndPageIdField),
-                btreeTuple.getFieldStart(invListEndPageIdField));
-        int startOff = IntegerSerializerDeserializer.getInt(btreeTuple.getFieldData(invListStartOffField),
-                btreeTuple.getFieldStart(invListStartOffField));
-        int numElements = IntegerSerializerDeserializer.getInt(btreeTuple.getFieldData(invListNumElementsField),
-                btreeTuple.getFieldStart(invListNumElementsField));
+        int startPageId = IntegerPointable.getInteger(btreeTuple.getFieldData(invListStartPageIdField), btreeTuple.getFieldStart(invListStartPageIdField));
+        int endPageId = IntegerPointable.getInteger(btreeTuple.getFieldData(invListEndPageIdField), btreeTuple.getFieldStart(invListEndPageIdField));
+        int startOff = IntegerPointable.getInteger(btreeTuple.getFieldData(invListStartOffField), btreeTuple.getFieldStart(invListStartOffField));
+        int numElements = IntegerPointable.getInteger(btreeTuple.getFieldData(invListNumElementsField), btreeTuple.getFieldStart(invListNumElementsField));
         listCursor.reset(startPageId, endPageId, startOff, numElements);
     }
 
@@ -337,6 +333,7 @@ public class OnDiskInvertedIndex implements IInvertedIndex {
             btreeTupleBuilder.reset();
             DataOutput output = btreeTupleBuilder.getDataOutput();
             // Add key fields.
+            lastTuple.reset(lastTupleBuilder.getFieldEndOffsets(), lastTupleBuilder.getByteArray());
             for (int i = 0; i < numTokenFields; i++) {
                 btreeTupleBuilder.addField(lastTuple.getFieldData(i), lastTuple.getFieldStart(i),
                         lastTuple.getFieldLength(i));
@@ -462,7 +459,7 @@ public class OnDiskInvertedIndex implements IInvertedIndex {
     public BTree getBTree() {
         return btree;
     }
-    
+
     public FileReference getInvListsFile() {
         return invListsFile;
     }
@@ -552,7 +549,7 @@ public class OnDiskInvertedIndex implements IInvertedIndex {
         private final int FRAME_SIZE = 32768;
 
         @Override
-        public int getFrameSize() {
+        public int getInitialFrameSize() {
             return FRAME_SIZE;
         }
 
@@ -565,11 +562,19 @@ public class OnDiskInvertedIndex implements IInvertedIndex {
         public ByteBuffer allocateFrame() {
             return ByteBuffer.allocate(FRAME_SIZE);
         }
-        
+
+        @Override public ByteBuffer allocateFrame(int bytes) throws HyracksDataException {
+            return ByteBuffer.allocate(bytes);
+        }
+
+        @Override public ByteBuffer reallocateFrame(ByteBuffer bytes, int newSizeInBytes, boolean copyOldData) throws HyracksDataException {
+            throw new HyracksDataException("TODO");
+        }
+
         @Override
-        public void deallocateFrames(int frameCount) {
+        public void deallocateFrames(int bytes) {
             // TODO Auto-generated method stub
-            
+
         }
     }
 
@@ -591,7 +596,7 @@ public class OnDiskInvertedIndex implements IInvertedIndex {
         IIndexAccessor btreeAccessor = btree.createAccessor(NoOpOperationCallback.INSTANCE,
                 NoOpOperationCallback.INSTANCE);
         IIndexCursor btreeCursor = btreeAccessor.createSearchCursor(false);
-        MultiComparator btreeCmp = MultiComparator.createIgnoreFieldLength(btree.getComparatorFactories());
+        MultiComparator btreeCmp = MultiComparator.create(btree.getComparatorFactories());
         RangePredicate rangePred = new RangePredicate(null, null, true, true, btreeCmp, btreeCmp);
         int[] fieldPermutation = new int[tokenTypeTraits.length];
         for (int i = 0; i < tokenTypeTraits.length; i++) {
@@ -602,7 +607,7 @@ public class OnDiskInvertedIndex implements IInvertedIndex {
         IInvertedIndexAccessor invIndexAccessor = (IInvertedIndexAccessor) createAccessor(
                 NoOpOperationCallback.INSTANCE, NoOpOperationCallback.INSTANCE);
         IInvertedListCursor invListCursor = invIndexAccessor.createInvertedListCursor();
-        MultiComparator invListCmp = MultiComparator.createIgnoreFieldLength(invListCmpFactories);
+        MultiComparator invListCmp = MultiComparator.create(invListCmpFactories);
 
         try {
             // Search key for finding an inverted-list in the actual index.
@@ -671,5 +676,10 @@ public class OnDiskInvertedIndex implements IInvertedIndex {
     @Override
     public IBinaryComparatorFactory[] getTokenCmpFactories() {
         return tokenCmpFactories;
+    }
+
+    @Override
+    public boolean hasMemoryComponents() {
+        return true;
     }
 }

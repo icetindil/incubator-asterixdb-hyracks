@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -36,12 +36,14 @@ import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.DistributeR
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.EmptyTupleSourceOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ExchangeOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ExtensionOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ExternalDataLookupOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.IndexInsertDeleteOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.InnerJoinOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.InsertDeleteOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.LeftOuterJoinOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.LimitOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.MaterializeOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.NestedTupleSourceOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.OrderOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.OrderOperator.IOrder;
@@ -53,11 +55,13 @@ import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ScriptOpera
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.SelectOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.SinkOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.SubplanOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.TokenizeOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.UnionAllOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.UnnestMapOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.UnnestOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.WriteOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.WriteResultOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.properties.OrderColumn;
 import edu.uci.ics.hyracks.algebricks.core.algebra.typing.ITypingContext;
 import edu.uci.ics.hyracks.algebricks.core.algebra.util.OperatorManipulationUtil;
 import edu.uci.ics.hyracks.algebricks.core.algebra.visitors.ILogicalOperatorVisitor;
@@ -98,6 +102,16 @@ public class SubstituteVariableVisitor implements ILogicalOperatorVisitor<Void, 
                 variables.set(i, pair.second);
             } else {
                 op.getExpressions().get(i).getValue().substituteVar(pair.first, pair.second);
+            }
+        }
+        // Substitute variables stored in ordering property
+        if (op.getExplicitOrderingProperty() != null) {
+            List<OrderColumn> orderColumns = op.getExplicitOrderingProperty().getOrderColumns();
+            for (int i = 0; i < orderColumns.size(); i++) {
+                OrderColumn oc = orderColumns.get(i);
+                if (oc.getColumn().equals(pair.first)) {
+                    orderColumns.set(i, new OrderColumn(pair.second, oc.getOrder()));
+                }
             }
         }
         substVarTypes(op, pair);
@@ -375,6 +389,12 @@ public class SubstituteVariableVisitor implements ILogicalOperatorVisitor<Void, 
     }
 
     @Override
+    public Void visitMaterializeOperator(MaterializeOperator op, Pair<LogicalVariable, LogicalVariable> arg)
+            throws AlgebricksException {
+        return null;
+    }
+
+    @Override
     public Void visitInsertDeleteOperator(InsertDeleteOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
         op.getPayloadExpression().getValue().substituteVar(pair.first, pair.second);
@@ -387,6 +407,19 @@ public class SubstituteVariableVisitor implements ILogicalOperatorVisitor<Void, 
 
     @Override
     public Void visitIndexInsertDeleteOperator(IndexInsertDeleteOperator op, Pair<LogicalVariable, LogicalVariable> pair)
+            throws AlgebricksException {
+        for (Mutable<ILogicalExpression> e : op.getPrimaryKeyExpressions()) {
+            e.getValue().substituteVar(pair.first, pair.second);
+        }
+        for (Mutable<ILogicalExpression> e : op.getSecondaryKeyExpressions()) {
+            e.getValue().substituteVar(pair.first, pair.second);
+        }
+        substVarTypes(op, pair);
+        return null;
+    }
+
+    @Override
+    public Void visitTokenizeOperator(TokenizeOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
         for (Mutable<ILogicalExpression> e : op.getPrimaryKeyExpressions()) {
             e.getValue().substituteVar(pair.first, pair.second);
@@ -416,6 +449,21 @@ public class SubstituteVariableVisitor implements ILogicalOperatorVisitor<Void, 
     @Override
     public Void visitExtensionOperator(ExtensionOperator op, Pair<LogicalVariable, LogicalVariable> arg)
             throws AlgebricksException {
+        return null;
+    }
+
+    @Override
+    public Void visitExternalDataLookupOperator(ExternalDataLookupOperator op,
+            Pair<LogicalVariable, LogicalVariable> pair) throws AlgebricksException {
+        List<LogicalVariable> variables = op.getVariables();
+        for (int i = 0; i < variables.size(); i++) {
+            if (variables.get(i) == pair.first) {
+                variables.set(i, pair.second);
+                return null;
+            }
+        }
+        op.getExpressionRef().getValue().substituteVar(pair.first, pair.second);
+        substVarTypes(op, pair);
         return null;
     }
 }

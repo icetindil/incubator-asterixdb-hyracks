@@ -32,6 +32,10 @@ public class NetworkOutputChannel implements IFrameWriter {
 
     private boolean aborted;
 
+    private int frameSize = 32768;
+
+    private int allocateCounter = 0;
+
     public NetworkOutputChannel(ChannelControlBlock ccb, int nBuffers) {
         this.ccb = ccb;
         this.nBuffers = nBuffers;
@@ -40,9 +44,7 @@ public class NetworkOutputChannel implements IFrameWriter {
     }
 
     public void setFrameSize(int frameSize) {
-        for (int i = 0; i < nBuffers; ++i) {
-            emptyStack.push(ByteBuffer.allocateDirect(frameSize));
-        }
+        this.frameSize = frameSize;
     }
 
     @Override
@@ -52,28 +54,36 @@ public class NetworkOutputChannel implements IFrameWriter {
     @Override
     public void nextFrame(ByteBuffer buffer) throws HyracksDataException {
         ByteBuffer destBuffer = null;
-        synchronized (this) {
-            while (true) {
-                if (aborted) {
-                    throw new HyracksDataException("Connection has been aborted");
-                }
-                destBuffer = emptyStack.poll();
-                if (destBuffer != null) {
-                    break;
-                }
-                try {
-                    wait();
-                } catch (InterruptedException e) {
-                    throw new HyracksDataException(e);
+        int startPos = 0;
+        do {
+            synchronized (this) {
+                while (true) {
+                    if (aborted) {
+                        throw new HyracksDataException("Connection has been aborted");
+                    }
+                    destBuffer = emptyStack.poll();
+                    if (destBuffer == null && allocateCounter < nBuffers) {
+                        destBuffer = ByteBuffer.allocateDirect(frameSize);
+                        allocateCounter++;
+                    }
+                    if (destBuffer != null) {
+                        break;
+                    }
+                    try {
+                        wait();
+                    } catch (InterruptedException e) {
+                        throw new HyracksDataException(e);
+                    }
                 }
             }
-        }
-        buffer.position(0);
-        buffer.limit(destBuffer.capacity());
-        destBuffer.clear();
-        destBuffer.put(buffer);
-        destBuffer.flip();
-        ccb.getWriteInterface().getFullBufferAcceptor().accept(destBuffer);
+            buffer.position(startPos);
+            startPos = Math.min(startPos + destBuffer.capacity(), buffer.capacity());
+            buffer.limit(startPos);
+            destBuffer.clear();
+            destBuffer.put(buffer);
+            destBuffer.flip();
+            ccb.getWriteInterface().getFullBufferAcceptor().accept(destBuffer);
+        } while (startPos < buffer.capacity());
     }
 
     @Override

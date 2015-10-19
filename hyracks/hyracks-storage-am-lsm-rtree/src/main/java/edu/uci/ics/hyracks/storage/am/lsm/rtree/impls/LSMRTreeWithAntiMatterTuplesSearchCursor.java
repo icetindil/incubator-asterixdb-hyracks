@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -52,6 +52,7 @@ public class LSMRTreeWithAntiMatterTuplesSearchCursor extends LSMIndexSearchCurs
     private int currentCursor;
     private SearchPredicate rtreeSearchPredicate;
     private int numMutableComponents;
+    private boolean open;
 
     public LSMRTreeWithAntiMatterTuplesSearchCursor(ILSMIndexOperationContext opCtx) {
         this(opCtx, false);
@@ -123,6 +124,7 @@ public class LSMRTreeWithAntiMatterTuplesSearchCursor extends LSMIndexSearchCurs
         searchNextCursor();
         setPriorityQueueComparator();
         initPriorityQueue();
+        open = true;
     }
 
     private void searchNextCursor() throws HyracksDataException, IndexException {
@@ -191,18 +193,25 @@ public class LSMRTreeWithAntiMatterTuplesSearchCursor extends LSMIndexSearchCurs
 
     @Override
     public void reset() throws HyracksDataException, IndexException {
+        if (!open) {
+            return;
+        }
+        currentCursor = 0;
+        foundNext = false;
         if (includeMutableComponent) {
             for (int i = 0; i < numMutableComponents; i++) {
                 mutableRTreeCursors[i].reset();
                 btreeCursors[i].reset();
             }
         }
-        currentCursor = 0;
         super.reset();
     }
 
     @Override
     public void close() throws HyracksDataException {
+        if (!open) {
+            return;
+        }
         if (includeMutableComponent) {
             for (int i = 0; i < numMutableComponents; i++) {
                 mutableRTreeCursors[i].close();
@@ -210,11 +219,13 @@ public class LSMRTreeWithAntiMatterTuplesSearchCursor extends LSMIndexSearchCurs
             }
         }
         currentCursor = 0;
+        open = false;
         super.close();
     }
 
     @Override
-    protected int compare(MultiComparator cmp, ITupleReference tupleA, ITupleReference tupleB) {
+    protected int compare(MultiComparator cmp, ITupleReference tupleA, ITupleReference tupleB)
+            throws HyracksDataException {
         return cmp.selectiveFieldCompare(tupleA, tupleB, comparatorFields);
     }
 
@@ -254,10 +265,16 @@ public class LSMRTreeWithAntiMatterTuplesSearchCursor extends LSMIndexSearchCurs
 
         @Override
         public int compare(PriorityQueueElement elementA, PriorityQueueElement elementB) {
-            int result = cmp.selectiveFieldCompare(elementA.getTuple(), elementB.getTuple(), comparatorFields);
-            if (result != 0) {
-                return result;
+            int result;
+            try {
+                result = cmp.selectiveFieldCompare(elementA.getTuple(), elementB.getTuple(), comparatorFields);
+                if (result != 0) {
+                    return result;
+                }
+            } catch (HyracksDataException e) {
+                throw new IllegalArgumentException(e);
             }
+
             if (elementA.getCursorIndex() > elementB.getCursorIndex()) {
                 return 1;
             } else {

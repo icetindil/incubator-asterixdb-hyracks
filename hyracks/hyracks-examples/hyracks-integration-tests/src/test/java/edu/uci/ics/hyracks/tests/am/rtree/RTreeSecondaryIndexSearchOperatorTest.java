@@ -44,7 +44,11 @@ import edu.uci.ics.hyracks.storage.am.rtree.dataflow.RTreeSearchOperatorDescript
 import edu.uci.ics.hyracks.storage.am.rtree.frames.RTreePolicyType;
 
 public class RTreeSecondaryIndexSearchOperatorTest extends AbstractRTreeOperatorTest {
+    public RTreeSecondaryIndexSearchOperatorTest() {
+        this.rTreeType = RTreeType.RTREE;
+    }
 
+    @Override
     @Before
     public void setup() throws Exception {
         super.setup();
@@ -85,8 +89,8 @@ public class RTreeSecondaryIndexSearchOperatorTest extends AbstractRTreeOperator
 
         RTreeSearchOperatorDescriptor secondarySearchOp = new RTreeSearchOperatorDescriptor(spec, secondaryRecDesc,
                 storageManager, lcManagerProvider, secondarySplitProvider, secondaryTypeTraits,
-                secondaryComparatorFactories, keyFields, rtreeDataflowHelperFactory, false,
-                NoOpOperationCallbackFactory.INSTANCE);
+                secondaryComparatorFactories, keyFields, rtreeDataflowHelperFactory, false, false, null,
+                NoOpOperationCallbackFactory.INSTANCE, null, null);
         PartitionConstraintHelper.addAbsoluteLocationConstraint(spec, secondarySearchOp, NC1_ID);
 
         // fifth field from the tuples coming from secondary index
@@ -97,8 +101,8 @@ public class RTreeSecondaryIndexSearchOperatorTest extends AbstractRTreeOperator
         // search primary index
         BTreeSearchOperatorDescriptor primarySearchOp = new BTreeSearchOperatorDescriptor(spec, primaryRecDesc,
                 storageManager, lcManagerProvider, primarySplitProvider, primaryTypeTraits, primaryComparatorFactories,
-                null, primaryLowKeyFields, primaryHighKeyFields, true, true, btreeDataflowHelperFactory, false,
-                NoOpOperationCallbackFactory.INSTANCE);
+                null, primaryLowKeyFields, primaryHighKeyFields, true, true, btreeDataflowHelperFactory, false, false,
+                null, NoOpOperationCallbackFactory.INSTANCE, null, null);
         PartitionConstraintHelper.addAbsoluteLocationConstraint(spec, primarySearchOp, NC1_ID);
 
         IFileSplitProvider outSplits = new ConstantFileSplitProvider(new FileSplit[] { new FileSplit(NC1_ID,
@@ -117,10 +121,10 @@ public class RTreeSecondaryIndexSearchOperatorTest extends AbstractRTreeOperator
     @Override
     protected IIndexDataflowHelperFactory createDataFlowHelperFactory(
             IPrimitiveValueProviderFactory[] secondaryValueProviderFactories, RTreePolicyType rtreePolicyType,
-            IBinaryComparatorFactory[] btreeComparatorFactories, ILinearizeComparatorFactory linearizerCmpFactory)
-            throws TreeIndexException {
+            IBinaryComparatorFactory[] btreeComparatorFactories, ILinearizeComparatorFactory linearizerCmpFactory,
+            int[] btreeFields) throws TreeIndexException {
         return ((RTreeOperatorTestHelper) testHelper).createDataFlowHelperFactory(secondaryValueProviderFactories,
-                rtreePolicyType, null);
+                rtreePolicyType, null, true);
     }
 
     @Override

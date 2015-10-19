@@ -31,6 +31,11 @@ import edu.uci.ics.hyracks.storage.am.rtree.utils.RTreeTestHarness;
 public class RTreeExamplesTest extends AbstractRTreeExamplesTest {
     private final RTreeTestHarness harness = new RTreeTestHarness();
 
+    public RTreeExamplesTest() {
+        super();
+        this.rTreeType = RTreeType.RTREE;
+    }
+
     @Before
     public void setUp() throws HyracksDataException {
         harness.setUp();
@@ -44,9 +49,10 @@ public class RTreeExamplesTest extends AbstractRTreeExamplesTest {
     @Override
     protected ITreeIndex createTreeIndex(ITypeTraits[] typeTraits, IBinaryComparatorFactory[] rtreeCmpFactories,
             IBinaryComparatorFactory[] btreeCmpFactories, IPrimitiveValueProviderFactory[] valueProviderFactories,
-            RTreePolicyType rtreePolicyType) throws TreeIndexException {
+            RTreePolicyType rtreePolicyType, int[] rtreeFields, int[] btreeFields, ITypeTraits[] filterTypeTraits,
+            IBinaryComparatorFactory[] filterCmpFactories, int[] filterFields) throws TreeIndexException {
         return RTreeUtils.createRTree(harness.getBufferCache(), harness.getFileMapProvider(), typeTraits,
-                valueProviderFactories, rtreeCmpFactories, rtreePolicyType, harness.getFileReference());
+                valueProviderFactories, rtreeCmpFactories, rtreePolicyType, harness.getFileReference(), true);
     }
 
 }

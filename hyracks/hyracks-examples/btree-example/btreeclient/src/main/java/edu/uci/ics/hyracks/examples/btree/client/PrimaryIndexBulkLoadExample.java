@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -38,6 +38,7 @@ import edu.uci.ics.hyracks.dataflow.common.data.partition.FieldHashPartitionComp
 import edu.uci.ics.hyracks.dataflow.std.connectors.MToNPartitioningConnectorDescriptor;
 import edu.uci.ics.hyracks.dataflow.std.connectors.OneToOneConnectorDescriptor;
 import edu.uci.ics.hyracks.dataflow.std.file.IFileSplitProvider;
+import edu.uci.ics.hyracks.dataflow.std.misc.NullSinkOperatorDescriptor;
 import edu.uci.ics.hyracks.dataflow.std.sort.ExternalSortOperatorDescriptor;
 import edu.uci.ics.hyracks.examples.btree.helper.DataGenOperatorDescriptor;
 import edu.uci.ics.hyracks.examples.btree.helper.IndexLifecycleManagerProvider;
@@ -46,7 +47,6 @@ import edu.uci.ics.hyracks.storage.am.btree.dataflow.BTreeDataflowHelperFactory;
 import edu.uci.ics.hyracks.storage.am.common.api.IIndexLifecycleManagerProvider;
 import edu.uci.ics.hyracks.storage.am.common.dataflow.IIndexDataflowHelperFactory;
 import edu.uci.ics.hyracks.storage.am.common.dataflow.TreeIndexBulkLoadOperatorDescriptor;
-import edu.uci.ics.hyracks.storage.am.common.impls.NoOpOperationCallbackFactory;
 import edu.uci.ics.hyracks.storage.common.IStorageManagerInterface;
 
 // This example will load a primary index from randomly generated data
@@ -70,6 +70,9 @@ public class PrimaryIndexBulkLoadExample {
 
         @Option(name = "-sortbuffer-size", usage = "Sort buffer size in frames (default: 32768)", required = false)
         public int sbSize = 32768;
+
+        @Option(name = "-frame-size", usage = "Hyracks frame size (default: 32768)", required = false)
+        public int frameSize = 32768;
     }
 
     public static void main(String[] args) throws Exception {
@@ -90,7 +93,7 @@ public class PrimaryIndexBulkLoadExample {
 
     private static JobSpecification createJob(Options options) {
 
-        JobSpecification spec = new JobSpecification();
+        JobSpecification spec = new JobSpecification(options.frameSize);
 
         String[] splitNCs = options.ncs.split(",");
 
@@ -146,11 +149,11 @@ public class PrimaryIndexBulkLoadExample {
                                                  // to field 0 of B-Tree tuple,
                                                  // etc.
         IFileSplitProvider btreeSplitProvider = JobHelper.createFileSplitProvider(splitNCs, options.btreeName);
-        IIndexDataflowHelperFactory dataflowHelperFactory = new BTreeDataflowHelperFactory();
-        TreeIndexBulkLoadOperatorDescriptor btreeBulkLoad = new TreeIndexBulkLoadOperatorDescriptor(spec,
+        IIndexDataflowHelperFactory dataflowHelperFactory = new BTreeDataflowHelperFactory(true);
+        TreeIndexBulkLoadOperatorDescriptor btreeBulkLoad = new TreeIndexBulkLoadOperatorDescriptor(spec, recDesc,
                 storageManager, lcManagerProvider, btreeSplitProvider, typeTraits, comparatorFactories, null,
-                fieldPermutation, 0.7f, false, 1000L, true, dataflowHelperFactory,
-                NoOpOperationCallbackFactory.INSTANCE);
+                fieldPermutation, 0.7f, false, 1000L, true, dataflowHelperFactory);
+
         JobHelper.createPartitionConstraint(spec, btreeBulkLoad, splitNCs);
 
         // distribute the records from the datagen via hashing to the bulk load
@@ -159,12 +162,13 @@ public class PrimaryIndexBulkLoadExample {
         hashFactories[0] = PointableBinaryHashFunctionFactory.of(UTF8StringPointable.FACTORY);
         IConnectorDescriptor hashConn = new MToNPartitioningConnectorDescriptor(spec,
                 new FieldHashPartitionComputerFactory(new int[] { 0 }, hashFactories));
+        NullSinkOperatorDescriptor nsOpDesc = new NullSinkOperatorDescriptor(spec);
+        JobHelper.createPartitionConstraint(spec, nsOpDesc, splitNCs);
 
         spec.connect(hashConn, dataGen, 0, sorter, 0);
-
         spec.connect(new OneToOneConnectorDescriptor(spec), sorter, 0, btreeBulkLoad, 0);
-
-        spec.addRoot(btreeBulkLoad);
+        spec.connect(new OneToOneConnectorDescriptor(spec), btreeBulkLoad, 0, nsOpDesc, 0);
+        spec.addRoot(nsOpDesc);
 
         return spec;
     }

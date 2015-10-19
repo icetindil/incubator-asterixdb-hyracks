@@ -16,6 +16,7 @@ package edu.uci.ics.hyracks.control.cc;
 
 import java.io.File;
 import java.io.FileReader;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -54,6 +55,7 @@ import edu.uci.ics.hyracks.control.cc.web.WebServer;
 import edu.uci.ics.hyracks.control.cc.work.ApplicationMessageWork;
 import edu.uci.ics.hyracks.control.cc.work.CliDeployBinaryWork;
 import edu.uci.ics.hyracks.control.cc.work.CliUnDeployBinaryWork;
+import edu.uci.ics.hyracks.control.cc.work.ClusterShutdownWork;
 import edu.uci.ics.hyracks.control.cc.work.GatherStateDumpsWork.StateDumpRun;
 import edu.uci.ics.hyracks.control.cc.work.GetDatasetDirectoryServiceInfoWork;
 import edu.uci.ics.hyracks.control.cc.work.GetIpAddressNodeNameMapWork;
@@ -66,6 +68,7 @@ import edu.uci.ics.hyracks.control.cc.work.JobStartWork;
 import edu.uci.ics.hyracks.control.cc.work.JobletCleanupNotificationWork;
 import edu.uci.ics.hyracks.control.cc.work.NodeHeartbeatWork;
 import edu.uci.ics.hyracks.control.cc.work.NotifyDeployBinaryWork;
+import edu.uci.ics.hyracks.control.cc.work.NotifyShutdownWork;
 import edu.uci.ics.hyracks.control.cc.work.NotifyStateDumpResponse;
 import edu.uci.ics.hyracks.control.cc.work.RegisterNodeWork;
 import edu.uci.ics.hyracks.control.cc.work.RegisterPartitionAvailibilityWork;
@@ -84,9 +87,11 @@ import edu.uci.ics.hyracks.control.common.context.ServerContext;
 import edu.uci.ics.hyracks.control.common.controllers.CCConfig;
 import edu.uci.ics.hyracks.control.common.deployment.DeploymentRun;
 import edu.uci.ics.hyracks.control.common.ipc.CCNCFunctions;
-import edu.uci.ics.hyracks.control.common.ipc.CCNCFunctions.StateDumpResponseFunction;
 import edu.uci.ics.hyracks.control.common.ipc.CCNCFunctions.Function;
+import edu.uci.ics.hyracks.control.common.ipc.CCNCFunctions.ShutdownResponseFunction;
+import edu.uci.ics.hyracks.control.common.ipc.CCNCFunctions.StateDumpResponseFunction;
 import edu.uci.ics.hyracks.control.common.logs.LogFile;
+import edu.uci.ics.hyracks.control.common.shutdown.ShutdownRun;
 import edu.uci.ics.hyracks.control.common.work.IPCResponder;
 import edu.uci.ics.hyracks.control.common.work.IResultCallback;
 import edu.uci.ics.hyracks.control.common.work.WorkQueue;
@@ -109,7 +114,7 @@ public class ClusterControllerService extends AbstractRemoteService {
 
     private final Map<String, NodeControllerState> nodeRegistry;
 
-    private final Map<String, Set<String>> ipAddressNodeNameMap;
+    private final Map<InetAddress, Set<String>> ipAddressNodeNameMap;
 
     private final ServerContext serverCtx;
 
@@ -143,12 +148,14 @@ public class ClusterControllerService extends AbstractRemoteService {
 
     private final Map<String, StateDumpRun> stateDumpRunMap;
 
+    private ShutdownRun shutdownCallback;
+
     public ClusterControllerService(final CCConfig ccConfig) throws Exception {
         this.ccConfig = ccConfig;
         File jobLogFolder = new File(ccConfig.ccRoot, "logs/jobs");
         jobLog = new LogFile(jobLogFolder);
         nodeRegistry = new LinkedHashMap<String, NodeControllerState>();
-        ipAddressNodeNameMap = new HashMap<String, Set<String>>();
+        ipAddressNodeNameMap = new HashMap<InetAddress, Set<String>>();
         serverCtx = new ServerContext(ServerContext.ServerType.CLUSTER_CONTROLLER, new File(ccConfig.ccRoot));
         IIPCI ccIPCI = new ClusterControllerIPCI();
         clusterIPC = new IPCSystem(new InetSocketAddress(ccConfig.clusterNetPort), ccIPCI,
@@ -179,7 +186,7 @@ public class ClusterControllerService extends AbstractRemoteService {
         final ClusterTopology topology = computeClusterTopology(ccConfig);
         ccContext = new ICCContext() {
             @Override
-            public void getIPAddressNodeMap(Map<String, Set<String>> map) throws Exception {
+            public void getIPAddressNodeMap(Map<InetAddress, Set<String>> map) throws Exception {
                 GetIpAddressNodeNameMapWork ginmw = new GetIpAddressNodeNameMapWork(ClusterControllerService.this, map);
                 workQueue.scheduleAndSync(ginmw);
             }
@@ -222,7 +229,6 @@ public class ClusterControllerService extends AbstractRemoteService {
         clientIPC.start();
         webServer.setPort(ccConfig.httpPort);
         webServer.start();
-        workQueue.start();
         info = new ClusterControllerInfo(ccConfig.clientNetIpAddress, ccConfig.clientNetPort,
                 webServer.getListeningPort());
         timer.schedule(sweeper, 0, ccConfig.heartbeatPeriod);
@@ -230,6 +236,7 @@ public class ClusterControllerService extends AbstractRemoteService {
         startApplication();
 
         datasetDirectoryService.init(executor);
+        workQueue.start();
         LOGGER.log(Level.INFO, "Started ClusterControllerService");
     }
 
@@ -250,11 +257,13 @@ public class ClusterControllerService extends AbstractRemoteService {
     @Override
     public void stop() throws Exception {
         LOGGER.log(Level.INFO, "Stopping ClusterControllerService");
-        executor.shutdownNow();
         webServer.stop();
         sweeper.cancel();
         workQueue.stop();
+        executor.shutdownNow();
+        clusterIPC.stop();
         jobLog.close();
+        clientIPC.stop();
         LOGGER.log(Level.INFO, "Stopped ClusterControllerService");
     }
 
@@ -278,7 +287,7 @@ public class ClusterControllerService extends AbstractRemoteService {
         return runMapHistory;
     }
 
-    public Map<String, Set<String>> getIpAddressNodeNameMap() {
+    public Map<InetAddress, Set<String>> getIpAddressNodeNameMap() {
         return ipAddressNodeNameMap;
     }
 
@@ -323,7 +332,7 @@ public class ClusterControllerService extends AbstractRemoteService {
     }
 
     public NetworkAddress getDatasetDirectoryServiceInfo() {
-        return new NetworkAddress(ccConfig.clientNetIpAddress.getBytes(), ccConfig.clientNetPort);
+        return new NetworkAddress(ccConfig.clientNetIpAddress, ccConfig.clientNetPort);
     }
 
     private class DeadNodeSweeper extends TimerTask {
@@ -429,6 +438,11 @@ public class ClusterControllerService extends AbstractRemoteService {
                             new IPCResponder<DeploymentId>(handle, mid)));
                     return;
                 }
+                case CLUSTER_SHUTDOWN: {
+                    workQueue.schedule(new ClusterShutdownWork(ClusterControllerService.this,
+                            new IPCResponder<Boolean>(handle, mid)));
+                    return;
+                }
             }
             try {
                 handle.send(mid, null, new IllegalArgumentException("Unknown function " + fn.getFunctionId()));
@@ -513,8 +527,8 @@ public class ClusterControllerService extends AbstractRemoteService {
                 case REGISTER_RESULT_PARTITION_LOCATION: {
                     CCNCFunctions.RegisterResultPartitionLocationFunction rrplf = (CCNCFunctions.RegisterResultPartitionLocationFunction) fn;
                     workQueue.schedule(new RegisterResultPartitionLocationWork(ClusterControllerService.this, rrplf
-                            .getJobId(), rrplf.getResultSetId(), rrplf.getOrderedResult(), rrplf.getPartition(), rrplf
-                            .getNPartitions(), rrplf.getNetworkAddress()));
+                            .getJobId(), rrplf.getResultSetId(), rrplf.getOrderedResult(), rrplf.getEmptyResult(),
+                            rrplf.getPartition(), rrplf.getNPartitions(), rrplf.getNetworkAddress()));
                     return;
                 }
 
@@ -562,6 +576,11 @@ public class ClusterControllerService extends AbstractRemoteService {
                             dsrf.getStateDumpId(), dsrf.getState()));
                     return;
                 }
+                case SHUTDOWN_RESPONSE: {
+                    CCNCFunctions.ShutdownResponseFunction sdrf = (ShutdownResponseFunction) fn;
+                    workQueue.schedule(new NotifyShutdownWork(ClusterControllerService.this, sdrf.getNodeId()));
+                    return;
+                }
             }
             LOGGER.warning("Unknown function: " + fn.getFunctionId());
         }
@@ -606,4 +625,13 @@ public class ClusterControllerService extends AbstractRemoteService {
     public synchronized void removeDeploymentRun(DeploymentId deploymentKey) {
         deploymentRunMap.remove(deploymentKey);
     }
+
+    public synchronized void setShutdownRun(ShutdownRun sRun) {
+        shutdownCallback = sRun;
+    }
+
+    public synchronized ShutdownRun getShutdownRun() {
+        return shutdownCallback;
+    }
+
 }

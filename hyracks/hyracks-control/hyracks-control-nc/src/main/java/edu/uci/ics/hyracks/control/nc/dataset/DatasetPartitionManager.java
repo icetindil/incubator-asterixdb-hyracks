@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.logging.Logger;
 
@@ -70,32 +71,38 @@ public class DatasetPartitionManager implements IDatasetPartitionManager {
             boolean asyncMode, int partition, int nPartitions) throws HyracksException {
         DatasetPartitionWriter dpw = null;
         JobId jobId = ctx.getJobletContext().getJobId();
-        try {
-            synchronized (this) {
-                ncs.getClusterController().registerResultPartitionLocation(jobId, rsId, orderedResult, partition,
-                        nPartitions, ncs.getDatasetNetworkManager().getNetworkAddress());
-                dpw = new DatasetPartitionWriter(ctx, this, jobId, rsId, asyncMode, partition, datasetMemoryManager,
-                        fileFactory);
+        synchronized (this) {
+            dpw = new DatasetPartitionWriter(ctx, this, jobId, rsId, asyncMode, orderedResult, partition, nPartitions,
+                    datasetMemoryManager, fileFactory);
 
-                ResultSetMap rsIdMap = (ResultSetMap) partitionResultStateMap.get(jobId);
-                if (rsIdMap == null) {
-                    rsIdMap = new ResultSetMap();
-                    partitionResultStateMap.put(jobId, rsIdMap);
-                }
-
-                ResultState[] resultStates = rsIdMap.get(rsId);
-                if (resultStates == null) {
-                    resultStates = new ResultState[nPartitions];
-                    rsIdMap.put(rsId, resultStates);
-                }
-                resultStates[partition] = dpw.getResultState();
+            ResultSetMap rsIdMap = (ResultSetMap) partitionResultStateMap.get(jobId);
+            if (rsIdMap == null) {
+                rsIdMap = new ResultSetMap();
+                partitionResultStateMap.put(jobId, rsIdMap);
             }
-        } catch (Exception e) {
-            throw new HyracksException(e);
+
+            ResultState[] resultStates = rsIdMap.get(rsId);
+            if (resultStates == null) {
+                resultStates = new ResultState[nPartitions];
+                rsIdMap.put(rsId, resultStates);
+            }
+            resultStates[partition] = dpw.getResultState();
         }
 
         LOGGER.fine("Initialized partition writer: JobId: " + jobId + ":partition: " + partition);
         return dpw;
+    }
+
+    @Override
+    public void registerResultPartitionLocation(JobId jobId, ResultSetId rsId, int partition, int nPartitions,
+            boolean orderedResult, boolean emptyResult) throws HyracksException {
+        try {
+            // Be sure to send the *public* network address to the CC
+            ncs.getClusterController().registerResultPartitionLocation(jobId, rsId, orderedResult, emptyResult,
+                    partition, nPartitions, ncs.getDatasetNetworkManager().getPublicNetworkAddress());
+        } catch (Exception e) {
+            throw new HyracksException(e);
+        }
     }
 
     @Override
@@ -112,7 +119,7 @@ public class DatasetPartitionManager implements IDatasetPartitionManager {
     @Override
     public void reportPartitionFailure(JobId jobId, ResultSetId rsId, int partition) throws HyracksException {
         try {
-            LOGGER.info("Reporting partition failure: JobId: " + jobId + ": ResultSetId: " + rsId + ":partition: "
+            LOGGER.info("Reporting partition failure: JobId: " + jobId + " ResultSetId: " + rsId + " partition: "
                     + partition);
             ncs.getClusterController().reportResultPartitionFailure(jobId, rsId, partition);
         } catch (Exception e) {
@@ -211,8 +218,13 @@ public class DatasetPartitionManager implements IDatasetPartitionManager {
     }
 
     @Override
-    public Map<JobId, IDatasetStateRecord> getStateMap() {
-        return partitionResultStateMap;
+    public Set<JobId> getJobIds() {
+        return partitionResultStateMap.keySet();
+    }
+
+    @Override
+    public IDatasetStateRecord getState(JobId jobId) {
+        return partitionResultStateMap.get(jobId);
     }
 
     @Override

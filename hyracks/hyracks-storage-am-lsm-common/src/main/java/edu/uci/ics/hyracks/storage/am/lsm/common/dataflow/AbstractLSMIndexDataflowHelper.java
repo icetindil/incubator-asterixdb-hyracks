@@ -18,6 +18,8 @@ package edu.uci.ics.hyracks.storage.am.lsm.common.dataflow;
 import java.util.List;
 
 import edu.uci.ics.hyracks.api.context.IHyracksTaskContext;
+import edu.uci.ics.hyracks.api.dataflow.value.IBinaryComparatorFactory;
+import edu.uci.ics.hyracks.api.dataflow.value.ITypeTraits;
 import edu.uci.ics.hyracks.storage.am.common.dataflow.IIndexOperatorDescriptor;
 import edu.uci.ics.hyracks.storage.am.common.dataflow.IndexDataflowHelper;
 import edu.uci.ics.hyracks.storage.am.lsm.common.api.ILSMIOOperationCallbackFactory;
@@ -37,25 +39,35 @@ public abstract class AbstractLSMIndexDataflowHelper extends IndexDataflowHelper
     protected final ILSMIOOperationScheduler ioScheduler;
     protected final ILSMOperationTrackerProvider opTrackerFactory;
     protected final ILSMIOOperationCallbackFactory ioOpCallbackFactory;
+    protected final ITypeTraits[] filterTypeTraits;
+    protected final IBinaryComparatorFactory[] filterCmpFactories;
+    protected final int[] filterFields;
 
     public AbstractLSMIndexDataflowHelper(IIndexOperatorDescriptor opDesc, IHyracksTaskContext ctx, int partition,
             List<IVirtualBufferCache> virtualBufferCaches, ILSMMergePolicy mergePolicy,
             ILSMOperationTrackerProvider opTrackerFactory, ILSMIOOperationScheduler ioScheduler,
-            ILSMIOOperationCallbackFactory ioOpCallbackFactory) {
+            ILSMIOOperationCallbackFactory ioOpCallbackFactory, ITypeTraits[] filterTypeTraits,
+            IBinaryComparatorFactory[] filterCmpFactories, int[] filterFields, boolean durable) {
         this(opDesc, ctx, partition, virtualBufferCaches, DEFAULT_BLOOM_FILTER_FALSE_POSITIVE_RATE, mergePolicy,
-                opTrackerFactory, ioScheduler, ioOpCallbackFactory);
+                opTrackerFactory, ioScheduler, ioOpCallbackFactory, filterTypeTraits, filterCmpFactories, filterFields,
+                durable);
     }
 
     public AbstractLSMIndexDataflowHelper(IIndexOperatorDescriptor opDesc, IHyracksTaskContext ctx, int partition,
             List<IVirtualBufferCache> virtualBufferCaches, double bloomFilterFalsePositiveRate,
             ILSMMergePolicy mergePolicy, ILSMOperationTrackerProvider opTrackerFactory,
-            ILSMIOOperationScheduler ioScheduler, ILSMIOOperationCallbackFactory ioOpCallbackFactory) {
-        super(opDesc, ctx, partition);
+            ILSMIOOperationScheduler ioScheduler, ILSMIOOperationCallbackFactory ioOpCallbackFactory,
+            ITypeTraits[] filterTypeTraits, IBinaryComparatorFactory[] filterCmpFactories, int[] filterFields,
+            boolean durable) {
+        super(opDesc, ctx, partition, durable);
         this.virtualBufferCaches = virtualBufferCaches;
         this.bloomFilterFalsePositiveRate = bloomFilterFalsePositiveRate;
         this.mergePolicy = mergePolicy;
         this.opTrackerFactory = opTrackerFactory;
         this.ioScheduler = ioScheduler;
         this.ioOpCallbackFactory = ioOpCallbackFactory;
+        this.filterTypeTraits = filterTypeTraits;
+        this.filterCmpFactories = filterCmpFactories;
+        this.filterFields = filterFields;
     }
 }

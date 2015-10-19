@@ -15,9 +15,12 @@
 package edu.uci.ics.hyracks.storage.am.common.dataflow;
 
 import java.io.DataOutput;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 
+import edu.uci.ics.hyracks.api.comm.VSizeFrame;
 import edu.uci.ics.hyracks.api.context.IHyracksTaskContext;
+import edu.uci.ics.hyracks.api.dataflow.value.INullWriter;
 import edu.uci.ics.hyracks.api.dataflow.value.IRecordDescriptorProvider;
 import edu.uci.ics.hyracks.api.dataflow.value.RecordDescriptor;
 import edu.uci.ics.hyracks.api.exceptions.HyracksDataException;
@@ -35,6 +38,7 @@ import edu.uci.ics.hyracks.storage.am.common.api.IIndexDataflowHelper;
 import edu.uci.ics.hyracks.storage.am.common.api.ISearchOperationCallback;
 import edu.uci.ics.hyracks.storage.am.common.api.ISearchPredicate;
 import edu.uci.ics.hyracks.storage.am.common.impls.NoOpOperationCallback;
+import edu.uci.ics.hyracks.storage.am.common.tuples.PermutingFrameTupleReference;
 
 public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInputUnaryOutputOperatorNodePushable {
     protected final IIndexOperatorDescriptor opDesc;
@@ -42,7 +46,6 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
     protected final IIndexDataflowHelper indexHelper;
     protected FrameTupleAccessor accessor;
 
-    protected ByteBuffer writeBuffer;
     protected FrameTupleAppender appender;
     protected ArrayTupleBuilder tb;
     protected DataOutput dos;
@@ -56,13 +59,36 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
     protected final boolean retainInput;
     protected FrameTupleReference frameTuple;
 
+    protected final boolean retainNull;
+    protected ArrayTupleBuilder nullTupleBuild;
+    protected INullWriter nullWriter;
+
+    protected final int[] minFilterFieldIndexes;
+    protected final int[] maxFilterFieldIndexes;
+    protected PermutingFrameTupleReference minFilterKey;
+    protected PermutingFrameTupleReference maxFilterKey;
+
     public IndexSearchOperatorNodePushable(IIndexOperatorDescriptor opDesc, IHyracksTaskContext ctx, int partition,
-            IRecordDescriptorProvider recordDescProvider) {
+            IRecordDescriptorProvider recordDescProvider, int[] minFilterFieldIndexes, int[] maxFilterFieldIndexes) {
         this.opDesc = opDesc;
         this.ctx = ctx;
         this.indexHelper = opDesc.getIndexDataflowHelperFactory().createIndexDataflowHelper(opDesc, ctx, partition);
         this.retainInput = opDesc.getRetainInput();
+        this.retainNull = opDesc.getRetainNull();
+        if (this.retainNull) {
+            this.nullWriter = opDesc.getNullWriterFactory().createNullWriter();
+        }
         this.inputRecDesc = recordDescProvider.getInputRecordDescriptor(opDesc.getActivityId(), 0);
+        this.minFilterFieldIndexes = minFilterFieldIndexes;
+        this.maxFilterFieldIndexes = maxFilterFieldIndexes;
+        if (minFilterFieldIndexes != null && minFilterFieldIndexes.length > 0) {
+            minFilterKey = new PermutingFrameTupleReference();
+            minFilterKey.setFieldPermutation(minFilterFieldIndexes);
+        }
+        if (maxFilterFieldIndexes != null && maxFilterFieldIndexes.length > 0) {
+            maxFilterKey = new PermutingFrameTupleReference();
+            maxFilterKey.setFieldPermutation(maxFilterFieldIndexes);
+        }
     }
 
     protected abstract ISearchPredicate createSearchPredicate();
@@ -73,19 +99,36 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
         return indexAccessor.createSearchCursor(false);
     }
 
+    protected abstract int getFieldCount();
+
     @Override
     public void open() throws HyracksDataException {
-        accessor = new FrameTupleAccessor(ctx.getFrameSize(), inputRecDesc);
+        accessor = new FrameTupleAccessor(inputRecDesc);
         writer.open();
         indexHelper.open();
         index = indexHelper.getIndexInstance();
+
+        if (retainNull) {
+            int fieldCount = getFieldCount();
+            nullTupleBuild = new ArrayTupleBuilder(fieldCount);
+            DataOutput out = nullTupleBuild.getDataOutput();
+            for (int i = 0; i < fieldCount; i++) {
+                try {
+                    nullWriter.writeNull(out);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                nullTupleBuild.addFieldEndOffset();
+            }
+        } else {
+            nullTupleBuild = null;
+        }
+
         try {
             searchPred = createSearchPredicate();
-            writeBuffer = ctx.allocateFrame();
             tb = new ArrayTupleBuilder(recordDesc.getFieldCount());
             dos = tb.getDataOutput();
-            appender = new FrameTupleAppender(ctx.getFrameSize());
-            appender.reset(writeBuffer, true);
+            appender = new FrameTupleAppender(new VSizeFrame(ctx), true);
             ISearchOperationCallback searchCallback = opDesc.getSearchOpCallbackFactory()
                     .createSearchOperationCallback(indexHelper.getResourceID(), ctx);
             indexAccessor = index.createAccessor(NoOpOperationCallback.INSTANCE, searchCallback);
@@ -100,7 +143,9 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
     }
 
     protected void writeSearchResults(int tupleIndex) throws Exception {
+        boolean matched = false;
         while (cursor.hasNext()) {
+            matched = true;
             tb.reset();
             cursor.next();
             if (retainInput) {
@@ -115,14 +160,13 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
                 dos.write(tuple.getFieldData(i), tuple.getFieldStart(i), tuple.getFieldLength(i));
                 tb.addFieldEndOffset();
             }
-            if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
-                FrameUtils.flushFrame(writeBuffer, writer);
-                appender.reset(writeBuffer, true);
-                if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
-                    throw new HyracksDataException("Record size (" + tb.getSize() + ") larger than frame size ("
-                            + appender.getBuffer().capacity() + ")");
-                }
-            }
+            FrameUtils.appendToWriter(writer, appender, tb.getFieldEndOffsets(), tb.getByteArray(), 0,
+                    tb.getSize());
+        }
+
+        if (!matched && retainInput && retainNull) {
+            FrameUtils.appendConcatToWriter(writer, appender, accessor, tupleIndex,
+                    nullTupleBuild.getFieldEndOffsets(), nullTupleBuild.getByteArray(), 0, nullTupleBuild.getSize());
         }
     }
 
@@ -145,15 +189,13 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
     @Override
     public void close() throws HyracksDataException {
         try {
-            if (appender.getTupleCount() > 0) {
-                FrameUtils.flushFrame(writeBuffer, writer);
-            }
-            writer.close();
+            appender.flush(writer, true);
             try {
                 cursor.close();
             } catch (Exception e) {
                 throw new HyracksDataException(e);
             }
+            writer.close();
         } finally {
             indexHelper.close();
         }

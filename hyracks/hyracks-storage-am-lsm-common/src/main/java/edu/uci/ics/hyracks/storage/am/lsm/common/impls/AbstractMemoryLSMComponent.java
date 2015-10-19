@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,6 +17,7 @@ package edu.uci.ics.hyracks.storage.am.lsm.common.impls;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import edu.uci.ics.hyracks.api.exceptions.HyracksDataException;
+import edu.uci.ics.hyracks.storage.am.lsm.common.api.ILSMComponentFilter;
 import edu.uci.ics.hyracks.storage.am.lsm.common.api.IVirtualBufferCache;
 
 public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
@@ -26,8 +27,8 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
     private final AtomicBoolean isModified;
     private boolean requestedToBeActive;
 
-    public AbstractMemoryLSMComponent(IVirtualBufferCache vbc, boolean isActive) {
-        super();
+    public AbstractMemoryLSMComponent(IVirtualBufferCache vbc, boolean isActive, ILSMComponentFilter filter) {
+        super(filter);
         this.vbc = vbc;
         writerCount = 0;
         if (isActive) {
@@ -36,6 +37,10 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
             state = ComponentState.INACTIVE;
         }
         isModified = new AtomicBoolean();
+    }
+
+    public AbstractMemoryLSMComponent(IVirtualBufferCache vbc, boolean isActive) {
+        this(vbc, isActive, null);
     }
 
     @Override
@@ -77,9 +82,10 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
                     }
                 }
                 break;
+            case REPLICATE:
             case SEARCH:
                 if (state == ComponentState.READABLE_WRITABLE || state == ComponentState.READABLE_UNWRITABLE
-                        || state == ComponentState.READABLE_UNWRITABLE_FLUSHING) {
+                || state == ComponentState.READABLE_UNWRITABLE_FLUSHING) {
                     readerCount++;
                 } else {
                     return false;
@@ -87,7 +93,9 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
                 break;
             case FLUSH:
                 if (state == ComponentState.READABLE_WRITABLE || state == ComponentState.READABLE_UNWRITABLE) {
-                    assert writerCount == 0;
+                    if (writerCount != 0) {
+                        throw new IllegalStateException("Trying to flush when writerCount != 0");
+                    }
                     state = ComponentState.READABLE_UNWRITABLE_FLUSHING;
                     readerCount++;
                 } else {
@@ -108,7 +116,8 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
             case MODIFICATION:
                 if (isMutableComponent) {
                     writerCount--;
-                    if (state == ComponentState.READABLE_WRITABLE && isFull()) {
+                    //A failed operation should not change the component state since it's better for the failed operation's effect to be no-op.
+                    if (state == ComponentState.READABLE_WRITABLE && !failedOperation && isFull()) {
                         state = ComponentState.READABLE_UNWRITABLE;
                     }
                 } else {
@@ -118,6 +127,7 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
                     }
                 }
                 break;
+            case REPLICATE:
             case SEARCH:
                 readerCount--;
                 if (state == ComponentState.UNREADABLE_UNWRITABLE && readerCount == 0) {
@@ -125,7 +135,9 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
                 }
                 break;
             case FLUSH:
-                assert state == ComponentState.READABLE_UNWRITABLE_FLUSHING;
+                if (state != ComponentState.READABLE_UNWRITABLE_FLUSHING) {
+                    throw new IllegalStateException("Flush sees an illegal LSM memory compoenent state: " + state);
+                }
                 readerCount--;
                 if (readerCount == 0) {
                     state = ComponentState.INACTIVE;
@@ -136,7 +148,10 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
             default:
                 throw new UnsupportedOperationException("Unsupported operation " + opType);
         }
-        assert readerCount > -1 && writerCount > -1;
+
+        if (readerCount <= -1 || writerCount <= -1) {
+            throw new IllegalStateException("Invalid reader or writer count " + readerCount + " - " + writerCount);
+        }
     }
 
     public boolean isReadable() {
@@ -154,6 +169,10 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
     @Override
     public ComponentState getState() {
         return state;
+    }
+
+    public void setState(ComponentState state) {
+        this.state = state;
     }
 
     public void setActive() {
@@ -174,5 +193,12 @@ public abstract class AbstractMemoryLSMComponent extends AbstractLSMComponent {
 
     protected void reset() throws HyracksDataException {
         isModified.set(false);
+        if (filter != null) {
+            filter.reset();
+        }
+    }
+
+    public int getWriterCount() {
+        return writerCount;
     }
 }

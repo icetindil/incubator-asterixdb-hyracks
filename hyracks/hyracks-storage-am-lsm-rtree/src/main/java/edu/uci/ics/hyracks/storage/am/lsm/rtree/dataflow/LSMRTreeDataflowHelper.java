@@ -39,15 +39,20 @@ import edu.uci.ics.hyracks.storage.common.buffercache.IBufferCache;
 import edu.uci.ics.hyracks.storage.common.file.IFileMapProvider;
 
 public class LSMRTreeDataflowHelper extends AbstractLSMRTreeDataflowHelper {
+    protected int[] btreeFields;
 
     public LSMRTreeDataflowHelper(IIndexOperatorDescriptor opDesc, IHyracksTaskContext ctx, int partition,
             List<IVirtualBufferCache> virtualBufferCaches, IBinaryComparatorFactory[] btreeComparatorFactories,
             IPrimitiveValueProviderFactory[] valueProviderFactories, RTreePolicyType rtreePolicyType,
             ILSMMergePolicy mergePolicy, ILSMOperationTrackerProvider opTrackerFactory,
             ILSMIOOperationScheduler ioScheduler, ILSMIOOperationCallbackFactory ioOpCallbackFactory,
-            ILinearizeComparatorFactory linearizeCmpFactory) {
+            ILinearizeComparatorFactory linearizeCmpFactory, int[] rtreeFields, int[] btreeFields,
+            ITypeTraits[] filterTypeTraits, IBinaryComparatorFactory[] filterCmpFactories, int[] filterFields,
+            boolean durable) {
         super(opDesc, ctx, partition, virtualBufferCaches, btreeComparatorFactories, valueProviderFactories,
-                rtreePolicyType, mergePolicy, opTrackerFactory, ioScheduler, ioOpCallbackFactory, linearizeCmpFactory);
+                rtreePolicyType, mergePolicy, opTrackerFactory, ioScheduler, ioOpCallbackFactory, linearizeCmpFactory,
+                rtreeFields, filterTypeTraits, filterCmpFactories, filterFields, durable);
+        this.btreeFields = btreeFields;
     }
 
     public LSMRTreeDataflowHelper(IIndexOperatorDescriptor opDesc, IHyracksTaskContext ctx, int partition,
@@ -56,10 +61,14 @@ public class LSMRTreeDataflowHelper extends AbstractLSMRTreeDataflowHelper {
             IPrimitiveValueProviderFactory[] valueProviderFactories, RTreePolicyType rtreePolicyType,
             ILSMMergePolicy mergePolicy, ILSMOperationTrackerProvider opTrackerFactory,
             ILSMIOOperationScheduler ioScheduler, ILSMIOOperationCallbackFactory ioOpCallbackFactory,
-            ILinearizeComparatorFactory linearizeCmpFactory) {
+            ILinearizeComparatorFactory linearizeCmpFactory, int[] rtreeFields, int[] btreeFields,
+            ITypeTraits[] filterTypeTraits, IBinaryComparatorFactory[] filterCmpFactories, int[] filterFields,
+            boolean durable) {
         super(opDesc, ctx, partition, virtualBufferCaches, bloomFilterFalsePositiveRate, btreeComparatorFactories,
                 valueProviderFactories, rtreePolicyType, mergePolicy, opTrackerFactory, ioScheduler,
-                ioOpCallbackFactory, linearizeCmpFactory);
+                ioOpCallbackFactory, linearizeCmpFactory, rtreeFields, filterTypeTraits, filterCmpFactories,
+                filterFields, durable);
+        this.btreeFields = btreeFields;
     }
 
     @Override
@@ -67,13 +76,15 @@ public class LSMRTreeDataflowHelper extends AbstractLSMRTreeDataflowHelper {
             IBufferCache diskBufferCache, IFileMapProvider diskFileMapProvider, ITypeTraits[] typeTraits,
             IBinaryComparatorFactory[] rtreeCmpFactories, IBinaryComparatorFactory[] btreeCmpFactories,
             ILSMOperationTracker opTracker, IPrimitiveValueProviderFactory[] valueProviderFactories,
-            RTreePolicyType rtreePolicyType, ILinearizeComparatorFactory linearizeCmpFactory)
+            RTreePolicyType rtreePolicyType, ILinearizeComparatorFactory linearizeCmpFactory, int[] rtreeFields,
+            ITypeTraits[] filterTypeTraits, IBinaryComparatorFactory[] filterCmpFactories, int[] filterFields)
             throws HyracksDataException {
         try {
             return LSMRTreeUtils.createLSMTree(virtualBufferCaches, file, diskBufferCache, diskFileMapProvider,
                     typeTraits, rtreeCmpFactories, btreeCmpFactories, valueProviderFactories, rtreePolicyType,
                     bloomFilterFalsePositiveRate, mergePolicy, opTracker, ioScheduler,
-                    ioOpCallbackFactory.createIOOperationCallback(), linearizeCmpFactory);
+                    ioOpCallbackFactory.createIOOperationCallback(), linearizeCmpFactory, rtreeFields, btreeFields,
+                    filterTypeTraits, filterCmpFactories, filterFields, durable);
         } catch (TreeIndexException e) {
             throw new HyracksDataException(e);
         }

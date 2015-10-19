@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,9 +17,11 @@ package edu.uci.ics.hyracks.storage.am.lsm.rtree.impls;
 
 import java.io.File;
 import java.io.FilenameFilter;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Date;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -41,12 +43,14 @@ public class LSMRTreeFileManager extends AbstractLSMIndexFileManager {
     private final TreeIndexFactory<? extends ITreeIndex> btreeFactory;
 
     private static FilenameFilter btreeFilter = new FilenameFilter() {
+        @Override
         public boolean accept(File dir, String name) {
             return !name.startsWith(".") && name.endsWith(BTREE_STRING);
         }
     };
 
     private static FilenameFilter rtreeFilter = new FilenameFilter() {
+        @Override
         public boolean accept(File dir, String name) {
             return !name.startsWith(".") && name.endsWith(RTREE_STRING);
         }
@@ -61,8 +65,7 @@ public class LSMRTreeFileManager extends AbstractLSMIndexFileManager {
 
     @Override
     public LSMComponentFileReferences getRelFlushFileReference() {
-        Date date = new Date();
-        String ts = formatter.format(date);
+        String ts = getCurrentTimestamp();
         String baseName = baseDir + ts + SPLIT_STRING + ts;
         // Begin timestamp and end timestamp are identical since it is a flush
         return new LSMComponentFileReferences(createFlushFile(baseName + SPLIT_STRING + RTREE_STRING),
@@ -77,7 +80,8 @@ public class LSMRTreeFileManager extends AbstractLSMIndexFileManager {
         String[] lastTimestampRange = lastFileName.split(SPLIT_STRING);
 
         String baseName = baseDir + firstTimestampRange[0] + SPLIT_STRING + lastTimestampRange[1];
-        // Get the range of timestamps by taking the earliest and the latest timestamps
+        // Get the range of timestamps by taking the earliest and the latest
+        // timestamps
         return new LSMComponentFileReferences(createMergeFile(baseName + SPLIT_STRING + RTREE_STRING),
                 createMergeFile(baseName + SPLIT_STRING + BTREE_STRING), createMergeFile(baseName + SPLIT_STRING
                         + BLOOM_FILTER_STRING));
@@ -90,15 +94,18 @@ public class LSMRTreeFileManager extends AbstractLSMIndexFileManager {
         ArrayList<ComparableFileName> allBTreeFiles = new ArrayList<ComparableFileName>();
         ArrayList<ComparableFileName> allBloomFilterFiles = new ArrayList<ComparableFileName>();
 
+        // Create a transaction filter <- to hide transaction components->
+        FilenameFilter transactionFilter = getTransactionFileFilter(false);
+
         // Gather files.
-        cleanupAndGetValidFilesInternal(btreeFilter, btreeFactory, allBTreeFiles);
+        cleanupAndGetValidFilesInternal(getCompoundFilter(transactionFilter, btreeFilter), btreeFactory, allBTreeFiles);
         HashSet<String> btreeFilesSet = new HashSet<String>();
         for (ComparableFileName cmpFileName : allBTreeFiles) {
             int index = cmpFileName.fileName.lastIndexOf(SPLIT_STRING);
             btreeFilesSet.add(cmpFileName.fileName.substring(0, index));
         }
-        validateFiles(btreeFilesSet, allRTreeFiles, rtreeFilter, rtreeFactory);
-        validateFiles(btreeFilesSet, allBloomFilterFiles, bloomFilterFilter, null);
+        validateFiles(btreeFilesSet, allRTreeFiles, getCompoundFilter(transactionFilter, rtreeFilter), rtreeFactory);
+        validateFiles(btreeFilesSet, allBloomFilterFiles, getCompoundFilter(transactionFilter, bloomFilterFilter), null);
 
         // Sanity check.
         if (allRTreeFiles.size() != allBTreeFiles.size() || allBTreeFiles.size() != allBloomFilterFiles.size()) {
@@ -183,7 +190,62 @@ public class LSMRTreeFileManager extends AbstractLSMIndexFileManager {
             validFiles.add(new LSMComponentFileReferences(cmpRTreeFileName.fileRef, cmpBTreeFileName.fileRef,
                     cmpBloomFilterFileName.fileRef));
         }
-
         return validFiles;
+    }
+
+    @Override
+    public LSMComponentFileReferences getNewTransactionFileReference() throws IOException {
+        String ts = getCurrentTimestamp();
+        // Create transaction lock file
+        Files.createFile(Paths.get(baseDir + TRANSACTION_PREFIX + ts));
+
+        String baseName = baseDir + ts + SPLIT_STRING + ts;
+        return new LSMComponentFileReferences(createFlushFile(baseName + SPLIT_STRING + RTREE_STRING),
+                createFlushFile(baseName + SPLIT_STRING + BTREE_STRING), createFlushFile(baseName + SPLIT_STRING
+                        + BLOOM_FILTER_STRING));
+    }
+
+    @Override
+    public LSMComponentFileReferences getTransactionFileReferenceForCommit() throws HyracksDataException {
+        FilenameFilter transactionFilter;
+        File dir = new File(baseDir);
+        String[] files = dir.list(transactionFileNameFilter);
+        if (files.length == 0) {
+            return null;
+        }
+        if (files.length != 1) {
+            throw new HyracksDataException("More than one transaction lock found:" + files.length);
+        } else {
+            transactionFilter = getTransactionFileFilter(true);
+            String txnFileName = dir.getPath() + File.separator + files[0];
+            // get the actual transaction files
+            files = dir.list(transactionFilter);
+            if (files.length < 3) {
+                throw new HyracksDataException("LSM Rtree transaction has less than 3 files :" + files.length);
+            }
+            try {
+                Files.delete(Paths.get(txnFileName));
+            } catch (IOException e) {
+                throw new HyracksDataException("Failed to delete transaction lock :" + txnFileName);
+            }
+        }
+        File rTreeFile = null;
+        File bTreeFile = null;
+        File bloomFilterFile = null;
+        for (String fileName : files) {
+            if (fileName.endsWith(BTREE_STRING)) {
+                bTreeFile = new File(dir.getPath() + File.separator + fileName);
+            } else if (fileName.endsWith(RTREE_STRING)) {
+                rTreeFile = new File(dir.getPath() + File.separator + fileName);
+            } else if (fileName.endsWith(BLOOM_FILTER_STRING)) {
+                bloomFilterFile = new File(dir.getPath() + File.separator + fileName);
+            } else {
+                throw new HyracksDataException("unrecognized file found = " + fileName);
+            }
+        }
+        FileReference rTreeFileRef = new FileReference(rTreeFile);
+        FileReference bTreeFileRef = new FileReference(bTreeFile);
+        FileReference bloomFilterFileRef = new FileReference(bloomFilterFile);
+        return new LSMComponentFileReferences(rTreeFileRef, bTreeFileRef, bloomFilterFileRef);
     }
 }

@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -82,9 +82,12 @@ public class BloomFilter {
     }
 
     public boolean contains(ITupleReference tuple, long[] hashes) throws HyracksDataException {
+        if (numPages == 0) {
+            return false;
+        }
         MurmurHash128Bit.hash3_x64_128(tuple, keyFields, SEED, hashes);
         for (int i = 0; i < numHashes; ++i) {
-            long hash = Math.abs((hashes[0] + (long) i * hashes[1]) % numBits);
+            long hash = Math.abs((hashes[0] + i * hashes[1]) % numBits);
 
             // we increment the page id by one, since the metadata page id of the filter is 0.
             ICachedPage page = bufferCache.pin(
@@ -210,7 +213,7 @@ public class BloomFilter {
                 throw new HyracksDataException("Failed to create the bloom filter builder since it is not activated.");
             }
 
-            this.numElements = numElements == 0 ? 1 : numElements;
+            this.numElements = numElements;
             this.numHashes = numHashes;
             numBits = this.numElements * numBitsPerElement;
             long tmp = (long) Math.ceil(numBits / (double) numBitsPerPage);
@@ -263,9 +266,13 @@ public class BloomFilter {
 
         @Override
         public void add(ITupleReference tuple) throws IndexException, HyracksDataException {
+            if (numPages == 0) {
+                throw new HyracksDataException(
+                        "Cannot add elements to this filter since it is supposed to be empty (number of elements hint passed to the filter during construction was 0).");
+            }
             MurmurHash128Bit.hash3_x64_128(tuple, keyFields, SEED, hashes);
             for (int i = 0; i < numHashes; ++i) {
-                long hash = Math.abs((hashes[0] + (long) i * hashes[1]) % numBits);
+                long hash = Math.abs((hashes[0] + i * hashes[1]) % numBits);
 
                 // we increment the page id by one, since the metadata page id of the filter is 0.
                 ICachedPage page = bufferCache.pin(
@@ -274,16 +281,14 @@ public class BloomFilter {
                 try {
                     ByteBuffer buffer = page.getBuffer();
                     int byteIndex = (int) (hash % numBitsPerPage) >> 3; // divide by 8
-                    byte b = buffer.get(byteIndex);
+                    byte b = buffer.array()[byteIndex];
                     int bitIndex = (int) (hash % numBitsPerPage) & 0x07; // mod 8
                     b = (byte) (b | (1 << bitIndex));
-
-                    buffer.put(byteIndex, b);
+                    buffer.array()[byteIndex] = b;
                 } finally {
                     page.releaseWriteLatch(true);
                     bufferCache.unpin(page);
                 }
-
             }
         }
 

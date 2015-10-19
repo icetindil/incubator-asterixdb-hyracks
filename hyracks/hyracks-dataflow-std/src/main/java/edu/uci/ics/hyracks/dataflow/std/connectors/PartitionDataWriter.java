@@ -19,12 +19,14 @@ import java.nio.ByteBuffer;
 
 import edu.uci.ics.hyracks.api.comm.IFrameWriter;
 import edu.uci.ics.hyracks.api.comm.IPartitionWriterFactory;
+import edu.uci.ics.hyracks.api.comm.VSizeFrame;
 import edu.uci.ics.hyracks.api.context.IHyracksTaskContext;
 import edu.uci.ics.hyracks.api.dataflow.value.ITuplePartitionComputer;
 import edu.uci.ics.hyracks.api.dataflow.value.RecordDescriptor;
 import edu.uci.ics.hyracks.api.exceptions.HyracksDataException;
 import edu.uci.ics.hyracks.dataflow.common.comm.io.FrameTupleAccessor;
 import edu.uci.ics.hyracks.dataflow.common.comm.io.FrameTupleAppender;
+import edu.uci.ics.hyracks.dataflow.common.comm.util.FrameUtils;
 
 public class PartitionDataWriter implements IFrameWriter {
     private final int consumerPartitionCount;
@@ -32,6 +34,8 @@ public class PartitionDataWriter implements IFrameWriter {
     private final FrameTupleAppender[] appenders;
     private final FrameTupleAccessor tupleAccessor;
     private final ITuplePartitionComputer tpc;
+    private final IHyracksTaskContext ctx;
+    private boolean allocatedFrame = false;
 
     public PartitionDataWriter(IHyracksTaskContext ctx, int consumerPartitionCount, IPartitionWriterFactory pwFactory,
             RecordDescriptor recordDescriptor, ITuplePartitionComputer tpc) throws HyracksDataException {
@@ -41,55 +45,51 @@ public class PartitionDataWriter implements IFrameWriter {
         for (int i = 0; i < consumerPartitionCount; ++i) {
             try {
                 pWriters[i] = pwFactory.createFrameWriter(i);
-                appenders[i] = new FrameTupleAppender(ctx.getFrameSize());
-                appenders[i].reset(ctx.allocateFrame(), true);
+                appenders[i] = new FrameTupleAppender();
             } catch (IOException e) {
                 throw new HyracksDataException(e);
             }
         }
-        tupleAccessor = new FrameTupleAccessor(ctx.getFrameSize(), recordDescriptor);
+        tupleAccessor = new FrameTupleAccessor(recordDescriptor);
         this.tpc = tpc;
+        this.ctx = ctx;
     }
 
     @Override
     public void close() throws HyracksDataException {
         for (int i = 0; i < pWriters.length; ++i) {
-            if (appenders[i].getTupleCount() > 0) {
-                flushFrame(appenders[i].getBuffer(), pWriters[i]);
+            if (allocatedFrame) {
+                appenders[i].flush(pWriters[i], true);
             }
             pWriters[i].close();
         }
-    }
-
-    private void flushFrame(ByteBuffer buffer, IFrameWriter frameWriter) throws HyracksDataException {
-        buffer.position(0);
-        buffer.limit(buffer.capacity());
-        frameWriter.nextFrame(buffer);
     }
 
     @Override
     public void open() throws HyracksDataException {
         for (int i = 0; i < pWriters.length; ++i) {
             pWriters[i].open();
-            appenders[i].reset(appenders[i].getBuffer(), true);
         }
     }
 
     @Override
     public void nextFrame(ByteBuffer buffer) throws HyracksDataException {
+        if (!allocatedFrame) {
+            allocateFrames();
+            allocatedFrame = true;
+        }
         tupleAccessor.reset(buffer);
         int tupleCount = tupleAccessor.getTupleCount();
         for (int i = 0; i < tupleCount; ++i) {
             int h = tpc.partition(tupleAccessor, i, consumerPartitionCount);
-            FrameTupleAppender appender = appenders[h];
-            if (!appender.append(tupleAccessor, i)) {
-                ByteBuffer appenderBuffer = appender.getBuffer();
-                flushFrame(appenderBuffer, pWriters[h]);
-                appender.reset(appenderBuffer, true);
-                if (!appender.append(tupleAccessor, i)) {
-                    throw new HyracksDataException("Record size (" + (tupleAccessor.getTupleEndOffset(i) - tupleAccessor.getTupleStartOffset(i)) + ") larger than frame size (" + appender.getBuffer().capacity() + ")");
-                }
-            }
+            FrameUtils.appendToWriter(pWriters[h], appenders[h], tupleAccessor, i);
+
+        }
+    }
+
+    private void allocateFrames() throws HyracksDataException {
+        for (int i = 0; i < appenders.length; ++i) {
+            appenders[i].reset(new VSizeFrame(ctx), true);
         }
     }
 

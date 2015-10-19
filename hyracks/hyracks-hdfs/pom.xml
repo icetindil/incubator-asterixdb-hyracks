@@ -22,12 +22,22 @@
   <parent>
     <groupId>edu.uci.ics.hyracks</groupId>
     <artifactId>hyracks</artifactId>
-    <version>0.2.11-SNAPSHOT</version>
+    <version>0.2.16-SNAPSHOT</version>
   </parent>
 
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+      <comments>A business-friendly OSS license</comments>
+    </license>
+  </licenses>
+
+
   <modules>
-    <module>hyracks-hdfs-0.20.2</module>
-    <module>hyracks-hdfs-0.23.1</module>
+    <module>hyracks-hdfs-1.x</module>
+    <module>hyracks-hdfs-2.x</module>
     <module>hyracks-hdfs-core</module>
   </modules>
 </project>

@@ -14,22 +14,50 @@
  */
 package edu.uci.ics.hyracks.api.comm;
 
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
 import java.io.Serializable;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Arrays;
 
-public final class NetworkAddress implements Serializable {
-    private static final long serialVersionUID = 1L;
+import edu.uci.ics.hyracks.api.io.IWritable;
 
-    private final byte[] ipAddress;
+public final class NetworkAddress implements IWritable, Serializable {
+    private static final long serialVersionUID = 2L;
 
-    private final int port;
+    private String address;
+    // Cached locally, not serialized
+    private byte[] ipAddress;
 
-    public NetworkAddress(byte[] ipAddress, int port) {
-        this.ipAddress = ipAddress;
-        this.port = port;
+    private int port;
+
+    public static NetworkAddress create(DataInput dis) throws IOException {
+        NetworkAddress networkAddress = new NetworkAddress();
+        networkAddress.readFields(dis);
+        return networkAddress;
     }
 
-    public byte[] getIpAddress() {
+    private NetworkAddress() {
+        ipAddress = null;
+    }
+
+    public NetworkAddress(String address, int port) {
+        this.address = address;
+        this.port = port;
+        ipAddress = null;
+    }
+
+    public String getAddress() {
+        return address;
+    }
+
+    public byte[] lookupIpAddress() throws UnknownHostException {
+        if (ipAddress == null) {
+            InetAddress addr = InetAddress.getByName(address);
+            ipAddress = addr.getAddress();
+        }
         return ipAddress;
     }
 
@@ -39,12 +67,12 @@ public final class NetworkAddress implements Serializable {
 
     @Override
     public String toString() {
-        return Arrays.toString(ipAddress) + ":" + port;
+        return address + ":" + port;
     }
 
     @Override
     public int hashCode() {
-        return Arrays.hashCode(ipAddress) + port;
+        return address.hashCode() + port;
     }
 
     @Override
@@ -53,6 +81,18 @@ public final class NetworkAddress implements Serializable {
             return false;
         }
         NetworkAddress on = (NetworkAddress) o;
-        return on.port == port && Arrays.equals(on.ipAddress, ipAddress);
+        return on.port == port && on.address == address;
+    }
+
+    @Override
+    public void writeFields(DataOutput output) throws IOException {
+        output.writeUTF(address);
+        output.writeInt(port);
+    }
+
+    @Override
+    public void readFields(DataInput input) throws IOException {
+        address = input.readUTF();
+        port = input.readInt();
     }
 }

@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -33,6 +33,7 @@ import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.DistributeR
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.EmptyTupleSourceOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ExchangeOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ExtensionOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ExternalDataLookupOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.IndexInsertDeleteOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.InnerJoinOperator;
@@ -40,6 +41,7 @@ import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.InsertDelet
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.InsertDeleteOperator.Kind;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.LeftOuterJoinOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.LimitOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.MaterializeOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.NestedTupleSourceOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.OrderOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.PartitioningSplitOperator;
@@ -50,6 +52,7 @@ import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ScriptOpera
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.SelectOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.SinkOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.SubplanOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.TokenizeOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.UnionAllOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.UnnestMapOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.UnnestOperator;
@@ -299,12 +302,22 @@ public class LogicalOperatorPrettyPrintVisitor implements ILogicalOperatorVisito
     }
 
     @Override
+    public String visitMaterializeOperator(MaterializeOperator op, Integer indent) throws AlgebricksException {
+        StringBuilder buffer = new StringBuilder();
+        addIndent(buffer, indent).append("materialize ");
+        return buffer.toString();
+    }
+
+    @Override
     public String visitInsertDeleteOperator(InsertDeleteOperator op, Integer indent) throws AlgebricksException {
         StringBuilder buffer = new StringBuilder();
         String header = op.getOperation() == Kind.INSERT ? "insert into " : "delete from ";
         addIndent(buffer, indent).append(header).append(op.getDataSource()).append(" from ")
                 .append(op.getPayloadExpression().getValue().accept(exprVisitor, indent)).append(" partitioned by ");
         pprintExprList(op.getPrimaryKeyExpressions(), buffer, indent);
+        if (op.isBulkload()) {
+            buffer.append(" [bulkload]");
+        }
         return buffer.toString();
     }
 
@@ -313,10 +326,20 @@ public class LogicalOperatorPrettyPrintVisitor implements ILogicalOperatorVisito
             throws AlgebricksException {
         StringBuilder buffer = new StringBuilder();
         String header = op.getOperation() == Kind.INSERT ? "insert into " : "delete from ";
-        addIndent(buffer, indent).append(header).append(op.getDataSourceIndex()).append(" from ");
+        addIndent(buffer, indent).append(header).append(op.getIndexName()).append(" on ")
+                .append(op.getDataSourceIndex().getDataSource()).append(" from ");
         pprintExprList(op.getSecondaryKeyExpressions(), buffer, indent);
-        buffer.append(" ");
-        pprintExprList(op.getPrimaryKeyExpressions(), buffer, indent);
+        if (op.isBulkload()) {
+            buffer.append(" [bulkload]");
+        }
+        return buffer.toString();
+    }
+
+    @Override
+    public String visitTokenizeOperator(TokenizeOperator op, Integer indent) throws AlgebricksException {
+        StringBuilder buffer = new StringBuilder();
+        addIndent(buffer, indent).append("tokenize ").append(op.getTokenizeVars()).append(" <- ");
+        pprintExprList(op.getSecondaryKeyExpressions(), buffer, indent);
         return buffer.toString();
     }
 
@@ -394,6 +417,15 @@ public class LogicalOperatorPrettyPrintVisitor implements ILogicalOperatorVisito
             }
         }
         sb.append("]");
+    }
+
+    @Override
+    public String visitExternalDataLookupOperator(ExternalDataLookupOperator op, Integer indent)
+            throws AlgebricksException {
+        StringBuilder buffer = new StringBuilder();
+        addIndent(buffer, indent).append(
+                "external-instant-lookup " + op.getVariables() + " <- " + op.getExpressionRef().getValue());
+        return buffer.toString();
     }
 
 }

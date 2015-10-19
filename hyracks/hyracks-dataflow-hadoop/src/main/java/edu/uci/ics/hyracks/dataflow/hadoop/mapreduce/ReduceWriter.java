@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * you may obtain a copy of the License from
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,8 +24,11 @@ import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
+import org.apache.hadoop.mapreduce.counters.GenericCounter;
 
+import edu.uci.ics.hyracks.api.comm.IFrame;
 import edu.uci.ics.hyracks.api.comm.IFrameWriter;
+import edu.uci.ics.hyracks.api.comm.VSizeFrame;
 import edu.uci.ics.hyracks.api.context.IHyracksTaskContext;
 import edu.uci.ics.hyracks.api.dataflow.value.IBinaryComparator;
 import edu.uci.ics.hyracks.api.dataflow.value.IBinaryComparatorFactory;
@@ -34,6 +37,7 @@ import edu.uci.ics.hyracks.api.exceptions.HyracksDataException;
 import edu.uci.ics.hyracks.dataflow.common.comm.io.FrameTupleAccessor;
 import edu.uci.ics.hyracks.dataflow.common.comm.io.FrameTupleAppender;
 import edu.uci.ics.hyracks.dataflow.common.comm.util.FrameUtils;
+import edu.uci.ics.hyracks.dataflow.hadoop.util.MRContextUtil;
 
 public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
     private final IHyracksTaskContext ctx;
@@ -41,7 +45,7 @@ public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
     private final int[] groupFields;
     private final FrameTupleAccessor accessor0;
     private final FrameTupleAccessor accessor1;
-    private final ByteBuffer copyFrame;
+    private final IFrame copyFrame;
     private final IBinaryComparator[] comparators;
     private final KVIterator kvi;
     private final Reducer<K2, V2, K3, V3> reducer;
@@ -51,7 +55,7 @@ public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
 
     private boolean first;
     private boolean groupStarted;
-    private List<ByteBuffer> group;
+    private List<IFrame> group;
     private int bPtr;
     private FrameTupleAppender fta;
     private Counter keyCounter;
@@ -64,10 +68,10 @@ public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
         this.ctx = ctx;
         this.helper = helper;
         this.groupFields = groupFields;
-        accessor0 = new FrameTupleAccessor(ctx.getFrameSize(), recordDescriptor);
-        accessor1 = new FrameTupleAccessor(ctx.getFrameSize(), recordDescriptor);
-        copyFrame = ctx.allocateFrame();
-        accessor1.reset(copyFrame);
+        accessor0 = new FrameTupleAccessor(recordDescriptor);
+        accessor1 = new FrameTupleAccessor(recordDescriptor);
+        copyFrame = new VSizeFrame(ctx);
+        accessor1.reset(copyFrame.getBuffer());
         comparators = new IBinaryComparator[comparatorFactories.length];
         for (int i = 0; i < comparatorFactories.length; ++i) {
             comparators[i] = comparatorFactories[i].createBinaryComparator();
@@ -77,21 +81,19 @@ public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
         this.taId = taId;
         this.taskAttemptContext = taskAttemptContext;
 
-        kvi = new KVIterator(ctx, helper, recordDescriptor);
+        kvi = new KVIterator(helper, recordDescriptor);
     }
 
     @Override
     public void open() throws HyracksDataException {
         first = true;
         groupStarted = false;
-        group = new ArrayList<ByteBuffer>();
+        group = new ArrayList<>();
         bPtr = 0;
-        group.add(ctx.allocateFrame());
-        fta = new FrameTupleAppender(ctx.getFrameSize());
-        keyCounter = new Counter() {
-        };
-        valueCounter = new Counter() {
-        };
+        group.add(new VSizeFrame(ctx));
+        fta = new FrameTupleAppender();
+        keyCounter = new GenericCounter();
+        valueCounter = new GenericCounter();
     }
 
     @Override
@@ -104,6 +106,7 @@ public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
                 first = false;
             } else {
                 if (i == 0) {
+                    accessor1.reset(copyFrame.getBuffer());
                     switchGroupIfRequired(accessor1, accessor1.getTupleCount() - 1, accessor0, i);
                 } else {
                     switchGroupIfRequired(accessor0, i - 1, accessor0, i);
@@ -111,20 +114,21 @@ public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
             }
             accumulate(accessor0, i);
         }
-        FrameUtils.copy(buffer, copyFrame);
+        copyFrame.ensureFrameSize(buffer.capacity());
+        FrameUtils.copyAndFlip(buffer, copyFrame.getBuffer());
     }
 
     private void accumulate(FrameTupleAccessor accessor, int tIndex) throws HyracksDataException {
         if (!fta.append(accessor, tIndex)) {
             ++bPtr;
             if (group.size() <= bPtr) {
-                group.add(ctx.allocateFrame());
+                group.add(new VSizeFrame(ctx));
             }
             fta.reset(group.get(bPtr), true);
             if (!fta.append(accessor, tIndex)) {
                 throw new HyracksDataException("Record size ("
                         + (accessor.getTupleEndOffset(tIndex) - accessor.getTupleStartOffset(tIndex))
-                        + ") larger than frame size (" + group.get(bPtr).capacity() + ")");
+                        + ") larger than frame size (" + group.get(bPtr).getBuffer().capacity() + ")");
             }
         }
     }
@@ -137,7 +141,7 @@ public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
         }
     }
 
-    private void groupInit() {
+    private void groupInit() throws HyracksDataException {
         groupStarted = true;
         bPtr = 0;
         fta.reset(group.get(0), true);
@@ -146,10 +150,10 @@ public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
     private void reduce() throws HyracksDataException {
         kvi.reset(group, bPtr + 1);
         try {
-            Reducer<K2, V2, K3, V3>.Context rCtx = reducer.new Context(helper.getConfiguration(), taId, kvi,
-                    keyCounter, valueCounter, recordWriter, null, null,
-                    (RawComparator<K2>) helper.getRawGroupingComparator(), (Class<K2>) helper.getJob()
-                            .getMapOutputKeyClass(), (Class<V2>) helper.getJob().getMapOutputValueClass());
+            Reducer<K2, V2, K3, V3>.Context rCtx = new MRContextUtil().createReduceContext(helper.getConfiguration(),
+                    taId, kvi, keyCounter, valueCounter, recordWriter, null, null, (RawComparator<K2>) helper
+                            .getRawGroupingComparator(), (Class<K2>) helper.getJob().getMapOutputKeyClass(),
+                    (Class<V2>) helper.getJob().getMapOutputValueClass());
             reducer.run(rCtx);
         } catch (Exception e) {
             throw new HyracksDataException(e);
@@ -157,7 +161,8 @@ public class ReduceWriter<K2, V2, K3, V3> implements IFrameWriter {
         groupStarted = false;
     }
 
-    private boolean sameGroup(FrameTupleAccessor a1, int t1Idx, FrameTupleAccessor a2, int t2Idx) {
+    private boolean sameGroup(FrameTupleAccessor a1, int t1Idx, FrameTupleAccessor a2, int t2Idx)
+            throws HyracksDataException {
         for (int i = 0; i < comparators.length; ++i) {
             int fIdx = groupFields[i];
             int s1 = a1.getTupleStartOffset(t1Idx) + a1.getFieldSlotsLength() + a1.getFieldStartOffset(t1Idx, fIdx);

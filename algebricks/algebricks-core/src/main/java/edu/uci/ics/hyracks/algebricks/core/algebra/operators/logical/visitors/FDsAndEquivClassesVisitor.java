@@ -21,6 +21,7 @@ import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 
 import org.apache.commons.lang3.mutable.Mutable;
@@ -50,12 +51,14 @@ import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.DistributeR
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.EmptyTupleSourceOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ExchangeOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ExtensionOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ExternalDataLookupOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.IndexInsertDeleteOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.InnerJoinOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.InsertDeleteOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.LeftOuterJoinOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.LimitOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.MaterializeOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.NestedTupleSourceOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.OrderOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.PartitioningSplitOperator;
@@ -66,6 +69,7 @@ import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.ScriptOpera
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.SelectOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.SinkOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.SubplanOperator;
+import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.TokenizeOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.UnionAllOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.UnnestMapOperator;
 import edu.uci.ics.hyracks.algebricks.core.algebra.operators.logical.UnnestOperator;
@@ -90,6 +94,12 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
         ILogicalOperator inp1 = op.getInputs().get(0).getValue();
         Map<LogicalVariable, EquivalenceClass> eqClasses = getOrComputeEqClasses(inp1, ctx);
         ctx.putEquivalenceClassMap(op, eqClasses);
+
+        // Propagates equivalence classes that from expressions.
+        // Note that an equivalence class can also contain expression members.
+        propagateEquivalenceFromExpressionsToVariables(eqClasses, op.getExpressions(), op.getVariables());
+
+        // Generates FDs.
         List<LogicalVariable> used = new ArrayList<LogicalVariable>();
         VariableUtilities.getUsedVariables(op, used);
         List<FunctionalDependency> fds1 = getOrComputeFDs(inp1, ctx);
@@ -112,7 +122,9 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
     @Override
     public Void visitDataScanOperator(DataSourceScanOperator op, IOptimizationContext ctx) throws AlgebricksException {
         ILogicalOperator inp1 = op.getInputs().get(0).getValue();
-        Map<LogicalVariable, EquivalenceClass> eqClasses = getOrComputeEqClasses(inp1, ctx);
+        Map<LogicalVariable, EquivalenceClass> eqClasses = getOrCreateEqClasses(op, ctx);
+        Map<LogicalVariable, EquivalenceClass> propagatedEqClasses = getOrComputeEqClasses(inp1, ctx);
+        eqClasses.putAll(propagatedEqClasses);
         ctx.putEquivalenceClassMap(op, eqClasses);
         List<FunctionalDependency> fds = new ArrayList<FunctionalDependency>(getOrComputeFDs(inp1, ctx));
         ctx.putFDList(op, fds);
@@ -402,6 +414,12 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
     }
 
     @Override
+    public Void visitMaterializeOperator(MaterializeOperator op, IOptimizationContext ctx) throws AlgebricksException {
+        propagateFDsAndEquivClasses(op, ctx);
+        return null;
+    }
+
+    @Override
     public Void visitRunningAggregateOperator(RunningAggregateOperator op, IOptimizationContext ctx)
             throws AlgebricksException {
         ctx.putEquivalenceClassMap(op, new HashMap<LogicalVariable, EquivalenceClass>());
@@ -417,13 +435,14 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
 
     @Override
     public Void visitSelectOperator(SelectOperator op, IOptimizationContext ctx) throws AlgebricksException {
-        Map<LogicalVariable, EquivalenceClass> equivalenceClasses = new HashMap<LogicalVariable, EquivalenceClass>();
-        List<FunctionalDependency> functionalDependencies = new ArrayList<FunctionalDependency>();
+        ILogicalOperator childOp = op.getInputs().get(0).getValue();
+        Map<LogicalVariable, EquivalenceClass> equivalenceClasses = getOrComputeEqClasses(childOp, ctx);
         ctx.putEquivalenceClassMap(op, equivalenceClasses);
+
+        List<FunctionalDependency> functionalDependencies = new ArrayList<FunctionalDependency>();
         ctx.putFDList(op, functionalDependencies);
-        ILogicalOperator op0 = op.getInputs().get(0).getValue();
-        functionalDependencies.addAll(getOrComputeFDs(op0, ctx));
-        equivalenceClasses.putAll(getOrComputeEqClasses(op0, ctx));
+        functionalDependencies.addAll(getOrComputeFDs(childOp, ctx));
+        equivalenceClasses.putAll(getOrComputeEqClasses(childOp, ctx));
         ILogicalExpression expr = op.getCondition().getValue();
         expr.getConstraintsAndEquivClasses(functionalDependencies, equivalenceClasses);
         return null;
@@ -487,13 +506,19 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
 
     @Override
     public Void visitInsertDeleteOperator(InsertDeleteOperator op, IOptimizationContext ctx) throws AlgebricksException {
-        setEmptyFDsEqClasses(op, ctx);
+        propagateFDsAndEquivClasses(op, ctx);
         return null;
     }
 
     @Override
     public Void visitIndexInsertDeleteOperator(IndexInsertDeleteOperator op, IOptimizationContext ctx)
             throws AlgebricksException {
+        propagateFDsAndEquivClasses(op, ctx);
+        return null;
+    }
+
+    @Override
+    public Void visitTokenizeOperator(TokenizeOperator op, IOptimizationContext ctx) throws AlgebricksException {
         setEmptyFDsEqClasses(op, ctx);
         return null;
     }
@@ -522,6 +547,16 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
         return eqClasses;
     }
 
+    private Map<LogicalVariable, EquivalenceClass> getOrCreateEqClasses(ILogicalOperator op, IOptimizationContext ctx)
+            throws AlgebricksException {
+        Map<LogicalVariable, EquivalenceClass> eqClasses = ctx.getEquivalenceClassMap(op);
+        if (eqClasses == null) {
+            eqClasses = new HashMap<LogicalVariable, EquivalenceClass>();
+            ctx.putEquivalenceClassMap(op, eqClasses);
+        }
+        return eqClasses;
+    }
+
     private List<FunctionalDependency> getOrComputeFDs(ILogicalOperator op, IOptimizationContext ctx)
             throws AlgebricksException {
         List<FunctionalDependency> fds = ctx.getFDList(op);
@@ -532,15 +567,28 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
         return fds;
     }
 
+    /***
+     * Propagated equivalent classes from the child to the current operator, based
+     * on the used variables of the current operator.
+     * 
+     * @param op
+     *            , the current operator
+     * @param ctx
+     *            , the optimization context which keeps track of all equivalent classes.
+     * @param usedVariables
+     *            , used variables.
+     * @throws AlgebricksException
+     */
     private void propagateFDsAndEquivClassesForUsedVars(ILogicalOperator op, IOptimizationContext ctx,
             List<LogicalVariable> usedVariables) throws AlgebricksException {
         ILogicalOperator op2 = op.getInputs().get(0).getValue();
-        Map<LogicalVariable, EquivalenceClass> eqClasses = new HashMap<LogicalVariable, EquivalenceClass>();
-        ctx.putEquivalenceClassMap(op, eqClasses);
+        Map<LogicalVariable, EquivalenceClass> eqClasses = getOrCreateEqClasses(op, ctx);
         List<FunctionalDependency> fds = new ArrayList<FunctionalDependency>();
         ctx.putFDList(op, fds);
 
         Map<LogicalVariable, EquivalenceClass> chldClasses = getOrComputeEqClasses(op2, ctx);
+
+        // Propagate equivalent classes that contain the used variables.
         for (LogicalVariable v : usedVariables) {
             EquivalenceClass ec = eqClasses.get(v);
             if (ec == null) {
@@ -568,6 +616,31 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
             }
         }
 
+        // Propagates equivalent classes that contain expressions that use the used variables.
+        // Note that for the case variable $v is not in the used variables but it is
+        // equivalent to field-access($t, i) and $t is a used variable, the equivalent
+        // class should still be propagated (kept).
+        Set<LogicalVariable> usedVarSet = new HashSet<LogicalVariable>(usedVariables);
+        for (Entry<LogicalVariable, EquivalenceClass> entry : chldClasses.entrySet()) {
+            EquivalenceClass ec = entry.getValue();
+            for (ILogicalExpression expr : ec.getExpressionMembers()) {
+                Set<LogicalVariable> exprUsedVars = new HashSet<LogicalVariable>();
+                expr.getUsedVariables(exprUsedVars);
+                exprUsedVars.retainAll(usedVarSet);
+                // Check if the expression member uses a used variable.
+                if (!exprUsedVars.isEmpty()) {
+                    for (LogicalVariable v : ec.getMembers()) {
+                        eqClasses.put(v, ec);
+                        // If variable members contain a used variable, the representative
+                        // variable should be a used variable.
+                        if (usedVarSet.contains(v)) {
+                            ec.setVariableRepresentative(v);
+                        }
+                    }
+                }
+            }
+        }
+
         List<FunctionalDependency> chldFds = getOrComputeFDs(op2, ctx);
         for (FunctionalDependency fd : chldFds) {
             if (!usedVariables.containsAll(fd.getHead())) {
@@ -589,7 +662,13 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
     private void fdsEqClassesForAbstractUnnestOperator(AbstractUnnestOperator op, IOptimizationContext ctx)
             throws AlgebricksException {
         ILogicalOperator inp1 = op.getInputs().get(0).getValue();
-        Map<LogicalVariable, EquivalenceClass> eqClasses = getOrComputeEqClasses(inp1, ctx);
+        Map<LogicalVariable, EquivalenceClass> eqClasses = getOrCreateEqClasses(op, ctx);
+        Map<LogicalVariable, EquivalenceClass> propagatedEqClasses = getOrComputeEqClasses(inp1, ctx);
+        /**
+         * The original eq classes of unnest-map are only for produced variables, therefore
+         * eqClasses and propagatedEqClasses do not have overlaps.
+         */
+        eqClasses.putAll(propagatedEqClasses);
         ctx.putEquivalenceClassMap(op, eqClasses);
         List<FunctionalDependency> fds = getOrComputeFDs(inp1, ctx);
         ctx.putFDList(op, fds);
@@ -645,6 +724,40 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
     public Void visitExtensionOperator(ExtensionOperator op, IOptimizationContext ctx) throws AlgebricksException {
         propagateFDsAndEquivClasses(op, ctx);
         return null;
+    }
+
+    @Override
+    public Void visitExternalDataLookupOperator(ExternalDataLookupOperator op, IOptimizationContext ctx)
+            throws AlgebricksException {
+        propagateFDsAndEquivClasses(op, ctx);
+        return null;
+    }
+
+    /**
+     * Propagate equivalences that carried in expressions to the variables that
+     * they are assigned to.
+     * 
+     * @param eqClasses
+     *            an equivalent class map
+     * @param assignExprs
+     *            expressions on the right-hand-side of assignments
+     * @param assignVars
+     *            variables on the left-hand-side of assignments
+     */
+    private void propagateEquivalenceFromExpressionsToVariables(Map<LogicalVariable, EquivalenceClass> eqClasses,
+            List<Mutable<ILogicalExpression>> assignExprs, List<LogicalVariable> assignVars) {
+        for (int assignVarIndex = 0; assignVarIndex < assignVars.size(); ++assignVarIndex) {
+            LogicalVariable var = assignVars.get(assignVarIndex);
+            ILogicalExpression expr = assignExprs.get(assignVarIndex).getValue();
+            for (Entry<LogicalVariable, EquivalenceClass> entry : eqClasses.entrySet()) {
+                EquivalenceClass eqc = entry.getValue();
+                // If the equivalence class contains the right-hand-side expression,
+                // the left-hand-side variable is added into the equivalence class.
+                if (eqc.contains(expr)) {
+                    eqc.addMember(var);
+                }
+            }
+        }
     }
 
 }

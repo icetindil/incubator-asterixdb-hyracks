@@ -19,7 +19,9 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
+import edu.uci.ics.hyracks.api.comm.IFrame;
 import edu.uci.ics.hyracks.api.comm.IFrameWriter;
+import edu.uci.ics.hyracks.api.comm.VSizeFrame;
 import edu.uci.ics.hyracks.api.context.IHyracksTaskContext;
 import edu.uci.ics.hyracks.api.dataflow.value.INullWriter;
 import edu.uci.ics.hyracks.api.dataflow.value.IPredicateEvaluator;
@@ -38,8 +40,8 @@ public class NestedLoopJoin {
     private final FrameTupleAccessor accessorOuter;
     private final FrameTupleAppender appender;
     private final ITuplePairComparator tpComparator;
-    private final ByteBuffer outBuffer;
-    private final ByteBuffer innerBuffer;
+    private final IFrame outBuffer;
+    private final IFrame innerBuffer;
     private final List<ByteBuffer> outBuffers;
     private final int memSize;
     private final IHyracksTaskContext ctx;
@@ -49,21 +51,24 @@ public class NestedLoopJoin {
     private final boolean isLeftOuter;
     private final ArrayTupleBuilder nullTupleBuilder;
     private final IPredicateEvaluator predEvaluator;
-    private boolean isReversed;		//Added for handling correct calling for predicate-evaluator upon recursive calls (in OptimizedHybridHashJoin) that cause role-reversal
+    private boolean isReversed;        //Added for handling correct calling for predicate-evaluator upon recursive calls (in OptimizedHybridHashJoin) that cause role-reversal
 
-    
     public NestedLoopJoin(IHyracksTaskContext ctx, FrameTupleAccessor accessor0, FrameTupleAccessor accessor1,
-            ITuplePairComparator comparators, int memSize, IPredicateEvaluator predEval, boolean isLeftOuter, INullWriter[] nullWriters1)
+            ITuplePairComparator comparators, int memSize, IPredicateEvaluator predEval, boolean isLeftOuter,
+            INullWriter[] nullWriters1)
             throws HyracksDataException {
         this.accessorInner = accessor1;
         this.accessorOuter = accessor0;
-        this.appender = new FrameTupleAppender(ctx.getFrameSize());
+        this.appender = new FrameTupleAppender();
         this.tpComparator = comparators;
-        this.outBuffer = ctx.allocateFrame();
-        this.innerBuffer = ctx.allocateFrame();
+        this.outBuffer = new VSizeFrame(ctx);
+        this.innerBuffer = new VSizeFrame(ctx);
         this.appender.reset(outBuffer, true);
         this.outBuffers = new ArrayList<ByteBuffer>();
         this.memSize = memSize;
+        if (memSize < 3) {
+            throw new HyracksDataException("Not enough memory is available for Nested Loop Join");
+        }
         this.predEvaluator = predEval;
         this.isReversed = false;
         this.ctx = ctx;
@@ -100,28 +105,31 @@ public class NestedLoopJoin {
             reloadFrame(outerBuffer);
             return;
         }
-        for (ByteBuffer outBuffer : outBuffers) {
-            runFileReader = runFileWriter.createReader();
-            runFileReader.open();
-            while (runFileReader.nextFrame(innerBuffer)) {
-                blockJoin(outBuffer, innerBuffer, writer);
+        runFileReader = runFileWriter.createReader();
+        runFileReader.open();
+        while (runFileReader.nextFrame(innerBuffer)) {
+            for (ByteBuffer outBuffer : outBuffers) {
+                blockJoin(outBuffer, innerBuffer.getBuffer(), writer);
             }
-            runFileReader.close();
         }
+        runFileReader.close();
         currentMemSize = 0;
         reloadFrame(outerBuffer);
     }
 
     private void createAndCopyFrame(ByteBuffer outerBuffer) throws HyracksDataException {
-        ByteBuffer outerBufferCopy = ctx.allocateFrame();
-        FrameUtils.copy(outerBuffer, outerBufferCopy);
+        ByteBuffer outerBufferCopy = ctx.allocateFrame(outerBuffer.capacity());
+        FrameUtils.copyAndFlip(outerBuffer, outerBufferCopy);
         outBuffers.add(outerBufferCopy);
         currentMemSize++;
     }
 
-    private void reloadFrame(ByteBuffer outerBuffer) {
+    private void reloadFrame(ByteBuffer outerBuffer) throws HyracksDataException {
         outBuffers.get(currentMemSize).clear();
-        FrameUtils.copy(outerBuffer, outBuffers.get(currentMemSize));
+        if (outBuffers.get(currentMemSize).capacity() != outerBuffer.capacity()) {
+            outBuffers.set(currentMemSize, ctx.allocateFrame(outerBuffer.capacity()));
+        }
+        FrameUtils.copyAndFlip(outerBuffer, outBuffers.get(currentMemSize));
         currentMemSize++;
     }
 
@@ -138,65 +146,43 @@ public class NestedLoopJoin {
                 int c = compare(accessorOuter, i, accessorInner, j);
                 boolean prdEval = evaluatePredicate(i, j);
                 if (c == 0 && prdEval) {
-                	matchFound = true;
-                	appendToResults(i, j, writer);
+                    matchFound = true;
+                    appendToResults(i, j, writer);
                 }
             }
 
             if (!matchFound && isLeftOuter) {
-                if (!appender.appendConcat(accessorOuter, i, nullTupleBuilder.getFieldEndOffsets(),
-                        nullTupleBuilder.getByteArray(), 0, nullTupleBuilder.getSize())) {
-                    flushFrame(outBuffer, writer);
-                    appender.reset(outBuffer, true);
-                    if (!appender.appendConcat(accessorOuter, i, nullTupleBuilder.getFieldEndOffsets(),
-                            nullTupleBuilder.getByteArray(), 0, nullTupleBuilder.getSize())) {
-                        int tSize = accessorOuter.getTupleEndOffset(i) - accessorOuter.getTupleStartOffset(i)
-                                + nullTupleBuilder.getSize();
-                        throw new HyracksDataException("Record size (" + tSize + ") larger than frame size ("
-                                + appender.getBuffer().capacity() + ")");
-                    }
-                }
+                final int[] ntFieldEndOffsets = nullTupleBuilder.getFieldEndOffsets();
+                final byte[] ntByteArray = nullTupleBuilder.getByteArray();
+                final int ntSize = nullTupleBuilder.getSize();
+                FrameUtils.appendConcatToWriter(writer, appender, accessorOuter, i, ntFieldEndOffsets, ntByteArray, 0,
+                        ntSize);
             }
         }
     }
-    
-    private boolean evaluatePredicate(int tIx1, int tIx2){
-    	if(isReversed){		//Role Reversal Optimization is triggered
-    		return ( (predEvaluator == null) || predEvaluator.evaluate(accessorInner, tIx2, accessorOuter, tIx1) );
-    	}
-    	else {
-    		return ( (predEvaluator == null) || predEvaluator.evaluate(accessorOuter, tIx1, accessorInner, tIx2) );
-    	}
+
+    private boolean evaluatePredicate(int tIx1, int tIx2) {
+        if (isReversed) {        //Role Reversal Optimization is triggered
+            return ((predEvaluator == null) || predEvaluator.evaluate(accessorInner, tIx2, accessorOuter, tIx1));
+        } else {
+            return ((predEvaluator == null) || predEvaluator.evaluate(accessorOuter, tIx1, accessorInner, tIx2));
+        }
     }
-    
-    private void appendToResults(int outerTupleId, int innerTupleId, IFrameWriter writer) throws HyracksDataException{
-    	if(!isReversed){
-    		if (!appender.appendConcat(accessorOuter, outerTupleId, accessorInner, innerTupleId)) {
-                flushFrame(outBuffer, writer);
-                appender.reset(outBuffer, true);
-                if (!appender.appendConcat(accessorOuter, outerTupleId, accessorInner, innerTupleId)) {
-                    int tSize = accessorOuter.getTupleEndOffset(outerTupleId) - accessorOuter.getTupleStartOffset(outerTupleId)
-                            + accessorInner.getTupleEndOffset(innerTupleId) - accessorInner.getTupleStartOffset(innerTupleId);
-                    throw new HyracksDataException("Record size (" + tSize + ") larger than frame size ("
-                            + appender.getBuffer().capacity() + ")");
-                }
-            }
-    	}
-    	else{ //Role Reversal Optimization is triggered
-    		if (!appender.appendConcat(accessorInner, innerTupleId, accessorOuter, outerTupleId)) {
-                flushFrame(outBuffer, writer);
-                appender.reset(outBuffer, true);
-                if (!appender.appendConcat(accessorInner, innerTupleId, accessorOuter, outerTupleId)) {
-                    int tSize = accessorInner.getTupleEndOffset(innerTupleId) - accessorInner.getTupleStartOffset(innerTupleId)+
-                    		accessorOuter.getTupleEndOffset(outerTupleId) - accessorOuter.getTupleStartOffset(outerTupleId);
-                    throw new HyracksDataException("Record size (" + tSize + ") larger than frame size ("
-                            + appender.getBuffer().capacity() + ")");
-                }
-            }
-    	}
-    	
+
+    private void appendToResults(int outerTupleId, int innerTupleId, IFrameWriter writer) throws HyracksDataException {
+        if (!isReversed) {
+            appendResultToFrame(accessorOuter, outerTupleId, accessorInner, innerTupleId, writer);
+        } else {
+            //Role Reversal Optimization is triggered
+            appendResultToFrame(accessorInner, innerTupleId, accessorOuter, outerTupleId, writer);
+        }
     }
-    
+
+    private void appendResultToFrame(FrameTupleAccessor accessor1, int tupleId1, FrameTupleAccessor accessor2,
+            int tupleId2, IFrameWriter writer) throws HyracksDataException {
+        FrameUtils.appendConcatToWriter(writer, appender, accessor1, tupleId1, accessor2, tupleId2);
+    }
+
     public void closeCache() throws HyracksDataException {
         if (runFileWriter != null) {
             runFileWriter.close();
@@ -204,29 +190,18 @@ public class NestedLoopJoin {
     }
 
     public void closeJoin(IFrameWriter writer) throws HyracksDataException {
-        for (int i = 0; i < currentMemSize; i++) {
-            ByteBuffer outBuffer = outBuffers.get(i);
-            runFileReader = runFileWriter.createReader();
-            runFileReader.open();
-            while (runFileReader.nextFrame(innerBuffer)) {
-                blockJoin(outBuffer, innerBuffer, writer);
+        runFileReader = runFileWriter.createReader();
+        runFileReader.open();
+        while (runFileReader.nextFrame(innerBuffer)) {
+            for (int i = 0; i < currentMemSize; i++) {
+                blockJoin(outBuffers.get(i), innerBuffer.getBuffer(), writer);
             }
-            runFileReader.close();
         }
+        runFileReader.close();
         outBuffers.clear();
         currentMemSize = 0;
 
-        if (appender.getTupleCount() > 0) {
-            flushFrame(outBuffer, writer);
-        }
-    }
-
-    private void flushFrame(ByteBuffer buffer, IFrameWriter writer) throws HyracksDataException {
-        buffer.position(0);
-        buffer.limit(buffer.capacity());
-        writer.nextFrame(buffer);
-        buffer.position(0);
-        buffer.limit(buffer.capacity());
+        appender.flush(writer, true);
     }
 
     private int compare(FrameTupleAccessor accessor0, int tIndex0, FrameTupleAccessor accessor1, int tIndex1)
@@ -237,8 +212,8 @@ public class NestedLoopJoin {
         }
         return 0;
     }
-    
-    public void setIsReversed(boolean b){
-    	this.isReversed = b;
+
+    public void setIsReversed(boolean b) {
+        this.isReversed = b;
     }
 }

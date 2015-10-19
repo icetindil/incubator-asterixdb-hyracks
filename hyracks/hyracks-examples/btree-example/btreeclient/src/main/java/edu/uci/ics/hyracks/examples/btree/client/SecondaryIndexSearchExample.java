@@ -66,6 +66,9 @@ public class SecondaryIndexSearchExample {
 
         @Option(name = "-secondary-btreename", usage = "Secondary B-Tree file name to search", required = true)
         public String secondaryBTreeName;
+
+        @Option(name = "-frame-size", usage = "Hyracks frame size (default: 32768)", required = false)
+        public int frameSize = 32768;
     }
 
     public static void main(String[] args) throws Exception {
@@ -86,7 +89,7 @@ public class SecondaryIndexSearchExample {
 
     private static JobSpecification createJob(Options options) throws HyracksDataException {
 
-        JobSpecification spec = new JobSpecification();
+        JobSpecification spec = new JobSpecification(options.frameSize);
 
         String[] splitNCs = options.ncs.split(",");
 
@@ -162,11 +165,12 @@ public class SecondaryIndexSearchExample {
 
         IFileSplitProvider secondarySplitProvider = JobHelper.createFileSplitProvider(splitNCs,
                 options.secondaryBTreeName);
-        IIndexDataflowHelperFactory dataflowHelperFactory = new BTreeDataflowHelperFactory();
+        IIndexDataflowHelperFactory dataflowHelperFactory = new BTreeDataflowHelperFactory(true);
         BTreeSearchOperatorDescriptor secondarySearchOp = new BTreeSearchOperatorDescriptor(spec, secondaryRecDesc,
                 storageManager, lcManagerProvider, secondarySplitProvider, secondaryTypeTraits,
                 searchComparatorFactories, null, secondaryLowKeyFields, secondaryHighKeyFields, true, true,
-                dataflowHelperFactory, false, NoOpOperationCallbackFactory.INSTANCE);
+                dataflowHelperFactory, false, false, null, NoOpOperationCallbackFactory.INSTANCE, null, null);
+
         JobHelper.createPartitionConstraint(spec, secondarySearchOp, splitNCs);
 
         // secondary index will output tuples with [UTF8String, Integer]
@@ -181,8 +185,9 @@ public class SecondaryIndexSearchExample {
         IFileSplitProvider primarySplitProvider = JobHelper.createFileSplitProvider(splitNCs, options.primaryBTreeName);
         BTreeSearchOperatorDescriptor primarySearchOp = new BTreeSearchOperatorDescriptor(spec, primaryRecDesc,
                 storageManager, lcManagerProvider, primarySplitProvider, primaryTypeTraits, primaryComparatorFactories,
-                null, primaryLowKeyFields, primaryHighKeyFields, true, true, dataflowHelperFactory, false,
-                NoOpOperationCallbackFactory.INSTANCE);
+                null, primaryLowKeyFields, primaryHighKeyFields, true, true, dataflowHelperFactory, false, false, null,
+                NoOpOperationCallbackFactory.INSTANCE, null, null);
+
         JobHelper.createPartitionConstraint(spec, primarySearchOp, splitNCs);
 
         // have each node print the results of its respective B-Tree
